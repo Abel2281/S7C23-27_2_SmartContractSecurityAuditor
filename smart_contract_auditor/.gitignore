@@ -1,0 +1,30 @@
+# Byte-compiled / Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environment & API Keys (CRITICAL: Never commit .env)
+.env
+.venv/
+env/
+venv/
+*.env
+
+# SQLite Databases & Local Audit Caches
+*.db
+*.sqlite3
+.audit_cache.db
+
+# Slither output files
+output.json
+
+# Build & Packaging artifacts
+build/
+dist/
+*.egg-info/
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store

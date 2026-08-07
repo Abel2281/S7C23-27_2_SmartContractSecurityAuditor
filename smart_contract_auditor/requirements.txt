@@ -1,0 +1,21 @@
+# CLI & terminal
+typer[all]>=0.12.0
+rich>=13.7.0
+
+# Config & env
+python-dotenv>=1.0.1
+
+# Validation
+pydantic>=2.7.0
+
+# HTTP / API calls (NVIDIA NIM, Mistral, OpenRouter — all OpenAI-compatible REST)
+requests>=2.32.0
+
+# Static analysis
+slither-analyzer>=0.10.0
+
+# Dev / test
+pytest>=8.0.0
+pytest-mock>=3.14.0
+black>=24.0.0
+ruff>=0.5.0
