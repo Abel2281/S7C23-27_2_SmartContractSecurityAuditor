@@ -8,7 +8,7 @@ See `ARCHITECTURE.md` for full system design.
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate
+.venv-win\Scripts\Activate.ps1 (for windows) | source .venv/bin/activate (for linux)
 pip install -r requirements.txt
 cp .env.example .env   # then fill in your API keys
 ```

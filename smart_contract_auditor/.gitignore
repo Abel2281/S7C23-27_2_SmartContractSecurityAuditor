@@ -9,6 +9,7 @@ __pycache__/
 .venv/
 env/
 venv/
+.venv-win/
 *.env
 
 # SQLite Databases & Local Audit Caches
