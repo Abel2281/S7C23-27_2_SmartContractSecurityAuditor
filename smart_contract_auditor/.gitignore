@@ -29,3 +29,11 @@ dist/
 .vscode/
 .idea/
 .DS_Store
+
+# Output files
+output/
+*.json
+
+# Temporary contract files
+contracts/
+*.solc
