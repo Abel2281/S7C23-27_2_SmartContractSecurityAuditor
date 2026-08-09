@@ -9,6 +9,7 @@ __pycache__/
 .venv/
 env/
 venv/
+.venv-win/
 *.env
 
 # SQLite Databases & Local Audit Caches
@@ -28,3 +29,11 @@ dist/
 .vscode/
 .idea/
 .DS_Store
+
+# Output files
+output/
+*.json
+
+# Temporary contract files
+contracts/
+*.solc
