@@ -1,15 +1,28 @@
+"""
+cli.py
+Terminal entry point for ChainGuard Phase 1 (preprocessing pipeline).
+
+Usage:
+    smart-audit run contracts/Vulnerabilities.sol
+    smart-audit run ./Vulnerabilities.sol
+    smart-audit run Vulnerabilities.sol          # bare filename -> looked up in contracts/
+
+Flow (all in-memory, one disk write at the end):
+    resolve path -> slither_runner.run_slither -> json_filter.filter_findings
+    -> code_slicer.slice_all -> write output/<contract_stem>_phase1.json
+"""
+
+import json
 from pathlib import Path
+
 import typer
 from typing_extensions import Annotated
+from typing import Optional
+from smart_audit.preprocessor.slither_runner import resolve_target_path, run_slither
+from smart_audit.preprocessor.json_filter import filter_findings
+from smart_audit.preprocessor.code_slicer import slice_all
 
-# Preprocessor imports
-from smart_audit.preprocessor.slither_runner import run_slither
-from smart_audit.preprocessor.json_filter import filter_findings, save_findings
-from smart_audit.preprocessor.code_slicer import slice_all, save_slices
-
-# UI imports
 from smart_audit.utils.terminal_ui import (
-    console,
     print_banner,
     print_info,
     print_success,
@@ -23,6 +36,9 @@ app = typer.Typer(
     add_completion=False,
 )
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+OUTPUT_DIR = PROJECT_ROOT / "output"
+
 
 @app.callback()
 def main():
@@ -30,20 +46,30 @@ def main():
     pass
 
 
+def _write_phase1_output(sliced: list[dict], contract_path: Path) -> Path:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = OUTPUT_DIR / f"{contract_path.stem}_phase1.json"
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(sliced, f, indent=2)
+    return out_path
+
+
 @app.command(name="run")
 def run_cmd(
     target: Annotated[
-        Path,
-        typer.Argument(
-            help="Path to the target .sol file or project directory.",
-        ),
+        str,
+        typer.Argument(help="Path to the target .sol file (bare filename, relative, or absolute)."),
     ],
+    max_findings: Annotated[
+        Optional[int],
+        typer.Option(help="Cap number of findings kept after filtering."),
+    ] = None,
     fast: Annotated[
         bool,
         typer.Option(
             "--fast",
             "-f",
-            help="Bypass execution delays between analysis steps.",
+            help="Reserved for future backoff/delay buffers between agent calls (Phase 2). No-op today.",
         ),
     ] = False,
 ):
@@ -52,55 +78,44 @@ def run_cmd(
     """
     print_banner()
 
-    # 1. Validation
-    if not target.exists():
-        print_error(f"Target path does not exist: '{target}'")
+    # 1. Resolve + validate path (bare filename / relative / absolute, with contracts/ fallback)
+    contract_path = resolve_target_path(target)
+    if contract_path is None:
+        print_error(f"Target path could not be resolved: '{target}'")
         raise typer.Exit(code=1)
 
-    if target.is_file() and target.suffix != ".sol":
-        print_error(f"Invalid file extension '{target.suffix}'. Target must be a '.sol' file.")
+    if contract_path.suffix != ".sol":
+        print_error(f"Invalid file extension '{contract_path.suffix}'. Target must be a '.sol' file.")
         raise typer.Exit(code=1)
 
-    print_success(f"Validated target path: {target.name}")
+    print_success(f"Validated target path: {contract_path.name}")
 
     if fast:
-        print_warning("Fast mode enabled.")
+        print_warning("Fast mode flag set (no-op until Phase 2 delay buffers exist).")
 
-    print_info("Starting Phase 1 pre-processing pipeline...")
-
-    # 2. Slither Analysis
-    with console.status("[bold green]Executing Slither analysis...", spinner="dots"):
-        raw_data = run_slither(str(target), output_json_path="output_raw.json")
+    # 2. Slither analysis (in-memory dict, scratch json deleted internally)
+    print_info("[1/3] Running Slither analysis...")
+    raw_data = run_slither(contract_path)
 
     if not raw_data:
         print_error("Slither analysis failed or generated no output. Check if Slither and solc are installed.")
         raise typer.Exit(code=1)
 
-    raw_results = raw_data.get("results", {}).get("detectors", [])
-    raw_count = len(raw_results)
-    print_success(f"Slither analysis complete ({raw_count} raw detectors triggered).")
+    detector_count = len(raw_data.get("results", {}).get("detectors", []))
+    print_success(f"{detector_count} findings detected")
 
-    # 3. JSON Filtering
-    with console.status("[bold green]Filtering High/Medium findings...", spinner="dots"):
-        filtered_findings = filter_findings(raw_data)
-        saved_filter_path = save_findings(filtered_findings, "filtered_findings.json")
+    # 3. Filtering (in-memory, no disk I/O)
+    print_info("[2/3] Filtering High/Medium findings...")
+    filtered_findings = filter_findings(raw_data, max_findings=max_findings)
+    print_success(f"{len(filtered_findings)} findings retained")
 
-    filtered_count = len(filtered_findings)
-    print_success(
-        f"JSON Filtering complete. Retained {filtered_count} High/Medium findings -> {saved_filter_path.name}"
-    )
+    # 4. AST code slicing (in-memory, no disk I/O)
+    print_info("[3/3] Extracting AST function code slices...")
+    sliced_findings = slice_all(filtered_findings, contract_path)
 
-    # 4. AST Code Slicing
-    with console.status("[bold green]Extracting AST function code slices...", spinner="dots"):
-        sliced_findings = slice_all(filtered_findings)
-        save_slices(sliced_findings)
-
-    print_success(
-        f"AST Slicing complete. Context extracted for {len(sliced_findings)} findings -> sliced_findings.json"
-    )
-
-    # 5. Final Handoff Output
-    print_success("Phase 1 pre-processing complete. Ready for Phase 2.")
+    # 5. Single end-of-phase write
+    out_path = _write_phase1_output(sliced_findings, contract_path)
+    print_success(f"Phase 1 pre-processing complete -> {out_path.name}. Ready for Phase 2.")
 
 
 if __name__ == "__main__":

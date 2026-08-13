@@ -56,7 +56,7 @@ def run_slither(target_contract_path: Path, temp_json_name: str = "output_raw.js
         "--json", str(abs_temp_path),
     ]
 
-    print(f"[slither_runner] Executing: {' '.join(cmd)}")
+    # print(f"[slither_runner] Executing: {' '.join(cmd)}")
 
     raw_data = None
     try:
