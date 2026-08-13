@@ -1,10 +1,11 @@
 """
 code_slicer.py
-Rule-based code slicer.
+Rule-based code slicer. No LLM calls.
 
-Input : output/filtered_findings.json   (from json_filter.py)
-Reads : contracts/<basename>.sol        (matched by filename basename)
-Output: output/sliced_findings.json
+Input : filtered findings (in-memory list, from json_filter.filter_findings)
+        + the resolved contract Path (same file the whole pipeline is running on)
+Output: sliced findings (in-memory list) — cli.py handles the single
+        end-of-phase disk write, not this module.
 
 For each finding, for each related_function, merges that function's
 distinct line spans (padded with CONTEXT_PADDING lines) into non-overlapping
@@ -13,43 +14,21 @@ are kept separate (not collapsed across functions) per existing span-handling
 rule.
 """
 
-import json
 from pathlib import Path
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-CONTRACTS_DIR = PROJECT_ROOT / "contracts"
-FILTERED_FINDINGS_PATH = PROJECT_ROOT / "output" / "filtered_findings.json"
-OUTPUT_PATH = PROJECT_ROOT / "output" / "sliced_findings.json"
 
 CONTEXT_PADDING = 3  # lines of context before/after each span
 
 
-def load_findings(path: Path = FILTERED_FINDINGS_PATH) -> list[dict]:
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def load_source_lines(contract_filename: str, cache: dict) -> list[str] | None:
-    """
-    Resolve source file by basename inside CONTRACTS_DIR (finding['filename']
-    may hold an absolute path from a different machine). Cached per basename
-    so each .sol file is read from disk only once.
-    """
-    basename = Path(contract_filename).name
-
-    if basename in cache:
-        return cache[basename]
-
-    source_path = CONTRACTS_DIR / basename
-    if not source_path.exists():
-        cache[basename] = None
+def load_source_lines(contract_path: Path) -> list[str] | None:
+    """Read the single contract file the CLI resolved at startup. Whole
+    pipeline runs against one user-supplied .sol file now, so no basename
+    lookup against a contracts/ folder is needed anymore."""
+    contract_path = Path(contract_path)
+    if not contract_path.exists():
         return None
 
-    with open(source_path, "r", encoding="utf-8", errors="replace") as f:
-        lines = f.read().splitlines()
-
-    cache[basename] = lines
-    return lines
+    with open(contract_path, "r", encoding="utf-8", errors="replace") as f:
+        return f.read().splitlines()
 
 
 def merge_spans(spans: list[dict], padding: int, max_line: int) -> list[tuple[int, int]]:
@@ -85,9 +64,7 @@ def extract_code_block(source_lines: list[str], start: int, end: int) -> str:
     return "\n".join(block_lines)
 
 
-def slice_finding(finding: dict, source_cache: dict) -> dict:
-    source_lines = load_source_lines(finding["filename"], source_cache)
-
+def slice_finding(finding: dict, source_lines: list[str] | None) -> dict:
     sliced_functions = []
     for related_fn in finding.get("related_functions", []):
         fn_name = related_fn["name"]
@@ -126,23 +103,25 @@ def slice_finding(finding: dict, source_cache: dict) -> dict:
     }
 
 
-def slice_all(findings: list[dict]) -> list[dict]:
-    source_cache: dict = {}
-    return [slice_finding(f, source_cache) for f in findings]
-
-
-def save_slices(sliced: list[dict], path: Path = OUTPUT_PATH) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(sliced, f, indent=2)
-
-
-def main():
-    findings = load_findings()
-    sliced = slice_all(findings)
-    save_slices(sliced)
-    print(f"Sliced {len(sliced)} findings -> {OUTPUT_PATH}")
+def slice_all(findings: list[dict], contract_path: Path) -> list[dict]:
+    """contract_path = the single .sol file resolved once at CLI startup,
+    same file slither/json_filter already ran against."""
+    source_lines = load_source_lines(contract_path)
+    return [slice_finding(f, source_lines) for f in findings]
 
 
 if __name__ == "__main__":
-    main()
+    # standalone dev test — adjust to a real contract path under contracts/
+    import json
+
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    test_contract = PROJECT_ROOT / "contracts" / "0x01f8c4e3fa3edeb29e514cba738d87ce8c091d3f.sol"
+    test_findings_path = PROJECT_ROOT / "output" / "filtered_findings.json"
+
+    if test_contract.exists() and test_findings_path.exists():
+        with open(test_findings_path, "r", encoding="utf-8") as f:
+            findings = json.load(f)
+        sliced = slice_all(findings, test_contract)
+        print(f"Sliced {len(sliced)} findings against {test_contract.name}")
+    else:
+        print("Missing test contract or test findings file for standalone run.")

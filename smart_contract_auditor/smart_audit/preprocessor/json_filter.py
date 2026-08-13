@@ -168,6 +168,8 @@ def filter_findings(
 
 
 def save_findings(findings: List[Dict[str, Any]], output_json_path: str = "filtered_findings.json") -> Path:
+    """Optional disk dump — NOT used by the cli.py pipeline (which stays
+    in-memory end to end). Kept for standalone debugging/testing only."""
     project_root = Path(__file__).resolve().parents[2]
     output_dir = project_root / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -180,6 +182,12 @@ def save_findings(findings: List[Dict[str, Any]], output_json_path: str = "filte
 
 
 if __name__ == "__main__":
+    # standalone test only — needs a leftover output_raw.json on disk.
+    # NOTE: cli.py's pipeline deletes slither's raw json right after parsing
+    # (see slither_runner.py), so this test path won't find one after a
+    # normal run. Run slither_runner.py's own
+    # __main__ block first and temporarily comment out its cleanup if you
+    # need a raw file to test against here.
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     test_path = PROJECT_ROOT / "output" / "output_raw.json"
 
@@ -192,4 +200,4 @@ if __name__ == "__main__":
         out_path = save_findings(result, "filtered_findings.json")
         print(f"[json_filter] Saved to: {out_path}")
     else:
-        print(f"No test file at {test_path}, run slither_runner.py first.")
+        print(f"No test file at {test_path}. See note above.")
