@@ -19,7 +19,9 @@ router is testable end-to-end now.
 """
 
 import os
+
 from . import budget_tracker as bt
+from . import model_discovery
 
 PROVIDER_TIERS = ["nvidia", "mistral", "openrouter"]
 
@@ -29,21 +31,25 @@ ROLE_TIER = {
     "judge": "heavy",
 }
 
-# placeholder model ids -- swapped for model_discovery.py output later
-ROLE_MODELS = {
-    "nvidia": {
-        "light": "nvidia/nemotron-nano-30b",
-        "heavy": "nvidia/nemotron-ultra-550b",
-    },
-    "mistral": {
-        "light": "mistral-small-latest",
-        "heavy": "mistral-large-latest",
-    },
-    "openrouter": {
-        "light": "meta-llama/llama-3.1-8b-instruct:free",
-        "heavy": "meta-llama/llama-3.1-70b-instruct:free",
-    },
-}
+# lazy, process-local cache -- avoids re-reading the model_catalog.json
+# cache file on every single route() call. discover_models() itself has
+# its own 24h disk-cache TTL underneath this.
+_role_models_cache: dict | None = None
+
+
+def _get_role_models() -> dict:
+    global _role_models_cache
+    if _role_models_cache is None:
+        _role_models_cache = model_discovery.discover_models()
+    return _role_models_cache
+
+
+def refresh_models() -> dict:
+    """Forces a live re-query of all provider /models endpoints. Call after
+    a dispatch fails with a 'model not found'-type error, or on demand."""
+    global _role_models_cache
+    _role_models_cache = model_discovery.discover_models(force_refresh=True)
+    return _role_models_cache
 
 ENDPOINTS = {
     "nvidia": "https://integrate.api.nvidia.com/v1/chat/completions",
@@ -116,7 +122,9 @@ def route(role: str, prompt: str, system: str | None = None) -> dict:
         if not bt.check_and_increment(provider, est_tokens):
             continue  # hard cap hit, try next tier
 
-        model = ROLE_MODELS[provider][tier]
+        model = _get_role_models().get(provider, {}).get(tier)
+        if model is None:
+            continue  # discovery found nothing usable for this provider/tier
         degraded = was_near_limit or provider != PROVIDER_TIERS[0]
 
         try:
