@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -6,6 +7,9 @@ from typing import Dict, Any, Optional
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONTRACTS_DIR = PROJECT_ROOT / "contracts"
 OUTPUT_DIR = PROJECT_ROOT / "output"
+
+# Matches `pragma solidity <expr>;` and captures just <expr>.
+_PRAGMA_RE = re.compile(r"pragma\s+solidity\s+([^;]+);")
 
 
 def resolve_target_path(target_contract_path: str) -> Optional[Path]:
@@ -57,9 +61,18 @@ def _ensure_solc_version(contract_path: Path) -> Optional[str]:
 
     try:
         source = contract_path.read_text(encoding="utf-8", errors="ignore")
-        version = solcx.install_solc_pragma(source, show_progress=False)
+        match = _PRAGMA_RE.search(source)
+        if not match:
+            print("[Warning] No 'pragma solidity ...;' statement found in contract. "
+                  "Falling back to system solc.")
+            return None
+
+        pragma_expr = match.group(1).strip()
+        pragma_string = f"pragma solidity {pragma_expr};"
+
+        version = solcx.install_solc_pragma(pragma_string, show_progress=False)
         solc_path = get_executable(version=version)
-        print(f"[slither_runner] Using solc {version} (auto-resolved from pragma)")
+        print(f"[slither_runner] Using solc {version} (resolved from pragma '{pragma_expr}')")
         return str(solc_path)
     except Exception as e:
         print(f"[Warning] Could not auto-resolve/install solc from pragma: {e}. "
