@@ -13,6 +13,7 @@ requests>=2.32.0
 
 # Static analysis
 slither-analyzer>=0.10.0
+py-solc-x==2.0.5
 
 # Dev / test
 pytest>=8.0.0
