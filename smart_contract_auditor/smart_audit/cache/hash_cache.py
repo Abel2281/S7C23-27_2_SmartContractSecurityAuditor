@@ -16,7 +16,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-DB_PATH = Path("output") / "hash_cache.db"
+DB_PATH = Path(".cache") / "hash_cache.db"
 
 
 def _init_db(conn: sqlite3.Connection) -> None:

@@ -20,7 +20,7 @@ import os
 import time
 from pathlib import Path
 
-CACHE_PATH = Path("output") / "model_catalog.json"
+CACHE_PATH = Path(".cache") / "model_catalog.json"
 CACHE_TTL_SECONDS = 24 * 60 * 60  # refresh once a day
 
 MODELS_ENDPOINTS = {

@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-DB_PATH = Path("output") / "budget_tracker.db"
+DB_PATH = Path(".cache") / "budget_tracker.db"
 
 # provider limits -- edit here if free-tier terms change
 # rpm_limit / daily_limit / token_limit = None means "not enforced"
