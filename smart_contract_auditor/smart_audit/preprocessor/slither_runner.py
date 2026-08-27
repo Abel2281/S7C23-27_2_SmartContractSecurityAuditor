@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -6,6 +7,9 @@ from typing import Dict, Any, Optional
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONTRACTS_DIR = PROJECT_ROOT / "contracts"
 OUTPUT_DIR = PROJECT_ROOT / "output"
+
+# Matches `pragma solidity <expr>;` and captures just <expr>.
+_PRAGMA_RE = re.compile(r"pragma\s+solidity\s+([^;]+);")
 
 
 def resolve_target_path(target_contract_path: str) -> Optional[Path]:
@@ -29,10 +33,51 @@ def resolve_target_path(target_contract_path: str) -> Optional[Path]:
 def _resolve_temp_output_path(temp_json_name: str) -> Path:
     """Slither itself forces a JSON write to disk (--json flag). We always
     write that forced file under OUTPUT_DIR and delete it right after
-    parsing — it never becomes a pipeline artifact, just a scratch file."""
+    parsing -- it never becomes a pipeline artifact, just a scratch file."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     p = Path(temp_json_name)
     return (OUTPUT_DIR / p.name).resolve()
+
+
+def _ensure_solc_version(contract_path: Path) -> Optional[str]:
+    """
+    Reads the contract's `pragma solidity ...` line, installs the matching
+    solc version via solc-x if it isn't already on disk (cached under
+    ~/.solcx/ across runs -- only downloads once per version), and returns
+    the path to that solc executable.
+
+    Never hard-fails the run: if the pragma can't be parsed or install
+    fails (e.g. no network), returns None and run_slither() falls back to
+    whatever solc is already active/on PATH -- same behavior as before this
+    fix, just no longer the ONLY behavior.
+    """
+    try:
+        import solcx
+        from solcx.install import get_executable
+    except ImportError:
+        print("[Warning] py-solc-x not installed (pip install py-solc-x==2.0.5). "
+              "Falling back to system solc -- version mismatches may still occur.")
+        return None
+
+    try:
+        source = contract_path.read_text(encoding="utf-8", errors="ignore")
+        match = _PRAGMA_RE.search(source)
+        if not match:
+            print("[Warning] No 'pragma solidity ...;' statement found in contract. "
+                  "Falling back to system solc.")
+            return None
+
+        pragma_expr = match.group(1).strip()
+        pragma_string = f"pragma solidity {pragma_expr};"
+
+        version = solcx.install_solc_pragma(pragma_string, show_progress=False)
+        solc_path = get_executable(version=version)
+        print(f"[slither_runner] Using solc {version} (resolved from pragma '{pragma_expr}')")
+        return str(solc_path)
+    except Exception as e:
+        print(f"[Warning] Could not auto-resolve/install solc from pragma: {e}. "
+              f"Falling back to system solc.")
+        return None
 
 
 def run_slither(target_contract_path: Path, temp_json_name: str = "output_raw.json") -> Optional[Dict[str, Any]]:
@@ -40,7 +85,7 @@ def run_slither(target_contract_path: Path, temp_json_name: str = "output_raw.js
     Runs Slither on an already-resolved contract Path and returns the
     parsed raw JSON as an in-memory dict. Slither's own --json output is
     written to a scratch file under OUTPUT_DIR and deleted immediately
-    after being read — it is not a pipeline-visible artifact.
+    after being read -- it is not a pipeline-visible artifact.
     """
     abs_target_path = Path(target_contract_path).resolve()
     if not abs_target_path.exists():
@@ -48,6 +93,7 @@ def run_slither(target_contract_path: Path, temp_json_name: str = "output_raw.js
         return None
 
     abs_temp_path = _resolve_temp_output_path(temp_json_name)
+    solc_path = _ensure_solc_version(abs_target_path)
 
     cmd = [
         "slither",
@@ -55,6 +101,8 @@ def run_slither(target_contract_path: Path, temp_json_name: str = "output_raw.js
         "--compile-force-framework", "solc",
         "--json", str(abs_temp_path),
     ]
+    if solc_path:
+        cmd += ["--solc", solc_path]
 
     # print(f"[slither_runner] Executing: {' '.join(cmd)}")
 
@@ -75,8 +123,7 @@ def run_slither(target_contract_path: Path, temp_json_name: str = "output_raw.js
     except Exception as e:
         print(f"[Error] Failed to execute Slither: {e}")
     finally:
-        # scratch file only exists to satisfy slither's own --json requirement,
-        # never a pipeline artifact -> always clean up
+        # scratch file only exists to satisfy slither's own --json requirement, never a pipeline artifact -> always clean up
         abs_temp_path.unlink(missing_ok=True)
 
     return raw_data

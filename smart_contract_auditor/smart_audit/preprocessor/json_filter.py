@@ -8,14 +8,19 @@ import json
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
-VALID_IMPACTS = {"High", "Medium"}
+# Excludes only Informational/Optimization (style/gas noise, non-security).
+# High/Medium/Low are all real security findings -- Low just means lowerseverity, not "safe to drop". 
+VALID_IMPACTS = {"High", "Medium", "Low"}
 
-TIER_MAP = {
-    ("High", "High"): 1,
-    ("High", "Medium"): 2,
-    ("Medium", "High"): 2,
-    ("Medium", "Medium"): 3,
-}
+# Computed tier instead of a hand-enumerated dict: impact ranks first, confidence second.
+_IMPACT_RANK = {"High": 0, "Medium": 1, "Low": 2}
+_CONFIDENCE_RANK = {"High": 0, "Medium": 1, "Low": 2}
+
+
+def _tier(impact: str, confidence: str) -> Optional[int]:
+    if impact not in _IMPACT_RANK or confidence not in _CONFIDENCE_RANK:
+        return None
+    return _IMPACT_RANK[impact] * len(_CONFIDENCE_RANK) + _CONFIDENCE_RANK[confidence]
 
 
 def _extract_locations(elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -63,7 +68,7 @@ def _extract_locations(elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _aggregate_locations(locations: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Group spans by (contract, function). NO min/max collapsing — every
+    """Group spans by (contract, function). NO min/max collapsing -- every
     distinct span Slither reported is kept as its own entry under that
     function, so scattered/disjoint lines (e.g. line 10-12 AND line 300-305
     in the same function) stay separate instead of merging into one huge
@@ -131,7 +136,7 @@ def filter_findings(
             continue  # fast reject before touching nested elements
 
         confidence = det.get("confidence")
-        tier = TIER_MAP.get((impact, confidence))
+        tier = _tier(impact, confidence)
         if tier is None:
             continue
 
@@ -168,7 +173,7 @@ def filter_findings(
 
 
 def save_findings(findings: List[Dict[str, Any]], output_json_path: str = "filtered_findings.json") -> Path:
-    """Optional disk dump — NOT used by the cli.py pipeline (which stays
+    """Optional disk dump -- NOT used by the cli.py pipeline (which stays
     in-memory end to end). Kept for standalone debugging/testing only."""
     project_root = Path(__file__).resolve().parents[2]
     output_dir = project_root / "output"
@@ -182,12 +187,6 @@ def save_findings(findings: List[Dict[str, Any]], output_json_path: str = "filte
 
 
 if __name__ == "__main__":
-    # standalone test only — needs a leftover output_raw.json on disk.
-    # NOTE: cli.py's pipeline deletes slither's raw json right after parsing
-    # (see slither_runner.py), so this test path won't find one after a
-    # normal run. Run slither_runner.py's own
-    # __main__ block first and temporarily comment out its cleanup if you
-    # need a raw file to test against here.
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
     test_path = PROJECT_ROOT / "output" / "output_raw.json"
 
