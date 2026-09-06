@@ -1,13 +1,36 @@
 """
 orchestrator.py
 Ties cache -> courtroom pipeline -> cache write together for one Slither
-finding, and loops that over all findings for a contract. Single-pass
-(Option A): Prosecutor -> Defender -> Judge, no re-loops.
+finding (as produced by code_slicer.slice_all), and loops that over all
+findings for a contract. Single-pass (Option A): Prosecutor -> Defender ->
+Judge, no re-loops.
 
-Does NOT touch budget_tracker.py directly -- headroom checks already happen
-inside api_router.route(), called by validator.validate_with_retry(), called
-by each agent. Orchestrator's job is just: cache check, sequencing, failure
-handling, cache write.
+REAL finding shape (from code_slicer.py -- NOT the earlier flat-fields guess):
+{
+  "finding_id": str,
+  "check": str,             # Slither detector name
+  "impact": str,            # High/Medium/Low
+  "confidence": str,        # High/Medium/Low -- separate from impact
+  "contract_name": str,
+  "related_functions": [
+    {
+      "name": str,
+      "slices": [{"start_line": int, "end_line": int, "code": str}, ...],
+      # OR, on a slicing failure: "slices": [], "error": str
+    },
+    ...
+  ]
+}
+There is NO top-level description/lines_start/lines_end -- one finding can
+span multiple functions, each with multiple merged line-span slices (e.g.
+reentrancy touching two disjoint blocks). _build_code_context() flattens
+this into a single string for the agents, so prosecutor.py/defender.py/
+judge.py don't need to know about the multi-function structure at all.
+
+Does NOT touch budget_tracker.py directly -- that's already gated inside
+api_router.route() (called by validator.validate_with_retry, called by each
+agent). Orchestrator's own jobs: cache check, code-context building, agent
+sequencing, failure/degraded-mode aggregation, cache write.
 """
 
 from smart_audit.cache import hash_cache
@@ -28,13 +51,32 @@ from smart_audit.router.validator import ValidationFailedError
 from smart_audit.router.api_router import AllProvidersExhaustedError  # noqa: F401
 
 
-def audit_finding(contract_source: str, finding: dict, code_slice: str) -> DebateRecord:
+def _build_code_context(finding: dict) -> str:
+    """
+    Flattens a finding's related_functions/slices into one string the agents
+    read as "the code". A finding can touch multiple functions; each
+    function can have multiple merged line-span slices. Functions that
+    failed to slice (missing source, no line spans) are noted rather than
+    silently dropped, so the agents know context may be incomplete.
+    """
+    parts = []
+    for fn in finding.get("related_functions", []):
+        parts.append(f"### Function: {fn['name']}")
+        if fn.get("error"):
+            parts.append(f"(slicing error: {fn['error']})")
+            continue
+        for sl in fn.get("slices", []):
+            parts.append(f"Lines {sl['start_line']}-{sl['end_line']}:\n{sl['code']}")
+    return "\n\n".join(parts) if parts else "(no code context available)"
+
+
+def audit_finding(contract_source: str, finding: dict) -> DebateRecord:
     """
     contract_source: FULL contract source text -- must be the exact string
-                      json_filter.py / code_slicer.py operated on, since
-                      hash_cache keys off contract_source + finding_id.
-    finding: filtered Slither finding dict (post json_filter.py), needs 'id'
-    code_slice: code_slicer.py's output for this finding
+                      the CLI read from disk (same file slither/code_slicer
+                      ran against), since hash_cache keys off
+                      contract_source + finding_id.
+    finding: one entry from code_slicer.slice_all()'s output.
 
     Cache is checked first; on hit, no agents run and no budget is touched.
 
@@ -53,28 +95,26 @@ def audit_finding(contract_source: str, finding: dict, code_slice: str) -> Debat
     next finding would just fail the same way. Propagates to cli.py, which
     decides whether to halt the run.
     """
-    finding_id = finding["id"]
+    finding_id = finding["finding_id"]
 
     cached = hash_cache.get(contract_source, finding_id)
     if cached is not None:
         return DebateRecord.model_validate(cached)
 
+    code_context = _build_code_context(finding)
     degraded = False
 
     try:
-        charge, meta1 = prosecute(finding, code_slice)
+        charge, meta1 = prosecute(finding, code_context)
         degraded = degraded or meta1["degraded"]
 
-        rebuttal, meta2 = defend(finding, code_slice, charge)
+        rebuttal, meta2 = defend(finding, code_context, charge)
         degraded = degraded or meta2["degraded"]
 
-        verdict, meta3 = judge(finding, code_slice, charge, rebuttal)
+        verdict, meta3 = judge(finding, code_context, charge, rebuttal)
         degraded = degraded or meta3["degraded"]
 
     except ValidationFailedError as e:
-        # NOT cached: this is a pipeline failure, not a real verdict. Caching
-        # it would permanently stick the finding at INCONCLUSIVE even after
-        # a transient model/provider hiccup clears up on the next run.
         return _inconclusive_record(finding_id, contract_source, reason=str(e))
 
     record = DebateRecord(
@@ -89,12 +129,9 @@ def audit_finding(contract_source: str, finding: dict, code_slice: str) -> Debat
     return record
 
 
-def audit_contract(
-    contract_source: str, findings: list[dict], code_slices: dict[str, str]
-) -> list[DebateRecord]:
+def audit_contract(contract_source: str, findings: list[dict]) -> list[DebateRecord]:
     """
-    findings: list of filtered Slither finding dicts (post json_filter.py)
-    code_slices: {finding_id: code_slice} from code_slicer.py
+    findings: code_slicer.slice_all()'s full output list for one contract.
 
     Runs audit_finding() for each finding in order. Stops immediately and
     lets AllProvidersExhaustedError propagate if it hits -- no point auditing
@@ -104,8 +141,7 @@ def audit_contract(
     """
     records: list[DebateRecord] = []
     for finding in findings:
-        code_slice = code_slices[finding["id"]]
-        record = audit_finding(contract_source, finding, code_slice)
+        record = audit_finding(contract_source, finding)
         records.append(record)
     return records
 

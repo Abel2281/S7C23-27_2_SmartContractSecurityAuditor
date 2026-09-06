@@ -1,7 +1,7 @@
 """
 Defender Agent - Phase 3, single-pass (Option A).
-Takes the Prosecutor's charge (+ original finding/code) and produces a
-DefenderResponse arguing why it may be a false positive.
+Takes the Prosecutor's charge (+ original finding/code context) and produces
+a DefenderResponse arguing why it may be a false positive.
 
 Same pattern as prosecutor.py: validate_with_retry owns routing/retry.
 No fallback_factory -- failure propagates to orchestrator.
@@ -31,29 +31,29 @@ No prose outside the JSON. No markdown fences.
 """
 
 
-def _build_prompt(finding: dict, code_slice: str, charge: ProsecutorCharge) -> str:
+def _build_prompt(finding: dict, code_context: str, charge: ProsecutorCharge) -> str:
     return (
-        f"Finding ID: {finding['id']}\n"
+        f"Finding ID: {finding['finding_id']}\n"
         f"Slither detector: {finding['check']}\n"
-        f"Slither-reported severity: {finding['impact']}\n"
-        f"Slither description: {finding['description']}\n\n"
-        f"Relevant code (lines {finding['lines_start']}-{finding['lines_end']}):\n"
-        f"```solidity\n{code_slice}\n```\n\n"
+        f"Slither-reported impact: {finding['impact']}\n"
+        f"Slither-reported confidence: {finding['confidence']}\n"
+        f"Contract: {finding['contract_name']}\n\n"
+        f"Relevant code:\n{code_context}\n\n"
         f"--- PROSECUTOR'S CHARGE ---\n"
         f"Summary: {charge.charge_summary}\n"
         f"Reasoning: {charge.reasoning}\n"
         f"Severity assessment: {charge.severity_assessment.value}\n"
         f"Attack scenario: {charge.attack_scenario or 'none given'}\n\n"
-        f"Formulate the defense. Use finding_id=\"{finding['id']}\" exactly."
+        f"Formulate the defense. Use finding_id=\"{finding['finding_id']}\" exactly."
     )
 
 
 def defend(
-    finding: dict, code_slice: str, charge: ProsecutorCharge
+    finding: dict, code_context: str, charge: ProsecutorCharge
 ) -> tuple[DefenderResponse, dict]:
     """
-    finding: filtered Slither finding dict (post json_filter.py)
-    code_slice: source snippet from code_slicer.py for this finding
+    finding: one entry from code_slicer.slice_all()'s output
+    code_context: flattened code string built by orchestrator._build_code_context()
     charge: the ProsecutorCharge already produced for this finding
 
     Returns (response, route_meta) -- same route_meta shape as prosecutor.py's
@@ -63,7 +63,7 @@ def defend(
       ValidationFailedError                 - schema validation exhausted retries
       api_router.AllProvidersExhaustedError - no provider had capacity at all
     """
-    prompt = _build_prompt(finding, code_slice, charge)
+    prompt = _build_prompt(finding, code_context, charge)
 
     response, route_meta = validate_with_retry(
         role=ROLE,
