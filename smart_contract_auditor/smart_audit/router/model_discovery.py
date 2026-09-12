@@ -1,28 +1,29 @@
 """
 model_discovery.py
 Dynamic free-model catalog loader. Replaces the static ROLE_MODELS placeholder
-in api_router.py. Queries each provider's /models endpoint, picks the first
-LIVE match from a priority-ordered candidate list per (provider, tier).
+in api_router.py. For each (provider, tier), verifies which candidate model
+is actually LIVE -- not just listed on the provider's /models endpoint.
 
-Free-tier catalogs churn (models get deprecated/renamed often). Rather than
-inventing ids from nothing, this keeps a hand-curated priority list per
-provider/tier and just verifies which candidate is currently actually being
-served, falling back down the list if the top choice disappeared.
+Listing presence is not proof a model serves completions: providers keep
+deprecated/inactive models in their catalog. A candidate is only trusted
+once a real minimal completion call against it succeeds (see _probe()).
+Probing is bounded (MAX_PROBE_ATTEMPTS per provider/tier) and goes through
+budget_tracker so it can't itself blow the RPM budget, and results are
+cached with the existing 24h TTL so probing happens once per cache cycle,
+not once per finding.
 
-Resilience: disk cache (output/model_catalog.json, 24h TTL) avoids hitting
-every provider's /models endpoint on every run. If a provider is unreachable,
-falls back to stale cache, then to the first hardcoded candidate -- this
-function must never raise; api_router always needs *a* model id to try.
-
-_pick() only falls back to candidates[0] when the live /models query itself
-failed. If the query succeeded and proved every candidate dead, it falls
-back to _heuristic_pick_from_live() instead of guaranteeing a 404.
+Resilience: disk cache (.cache/model_catalog.json, 24h TTL) avoids
+re-probing on every run. If a provider's /models query itself fails
+(network/auth), falls back to stale cache, then to the first hardcoded
+candidate unprobed -- this function must never raise; api_router always
+needs *a* model id to try.
 """
 
 import json
 import os
 import time
 from pathlib import Path
+from . import budget_tracker as bt
 
 CACHE_PATH = Path(".cache") / "model_catalog.json"
 CACHE_TTL_SECONDS = 24 * 60 * 60  # refresh once a day
@@ -33,41 +34,52 @@ MODELS_ENDPOINTS = {
     "openrouter": "https://openrouter.ai/api/v1/models",
 }
 
+CHAT_ENDPOINTS = {
+    "nvidia": "https://integrate.api.nvidia.com/v1/chat/completions",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    "openrouter": "https://openrouter.ai/api/v1/chat/completions",
+}
+
 API_KEY_ENV = {
     "nvidia": "NVIDIA_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
 }
 
-# priority-ordered candidates per provider/tier -- these are just a PREFERENCE
-# order, not a requirement. If none of them are live, _pick() now falls back
-# to picking directly from the live catalog itself (see TIER_HINTS below)
-# instead of giving up on the whole provider/tier.
+# priority-ordered candidates per provider/tier -- a PREFERENCE order, not a
+# requirement. Each is probed in order; first one to actually respond wins.
 CANDIDATES = {
     "nvidia": {
         "light": [
+            "nvidia/nemotron-3.5-lightning-30b-a3b",
+            "openai/gpt-oss-20b",
+            "z-ai/glm-5.3-flash",
             "nvidia/llama-3.1-nemotron-nano-8b-v1",
-            "nvidia/nemotron-nano-12b-v2-vl",
-            "nvidia/nemotron-nano-9b-v2",
-            "meta/llama-3.1-8b-instruct",
         ],
         "heavy": [
-            "nvidia/nemotron-3-ultra-550b-a55b",
-            "nvidia/llama-3.1-nemotron-70b-instruct",
-            "meta/llama-3.1-70b-instruct",
+            "nvidia/nemotron-3-super-120b-a12b",
+            "z-ai/glm-5.3-flash",
+            "openai/gpt-oss-20b",
         ],
     },
     "gemini": {
+        # ordered by daily-request headroom first (light tier needs sustained
+        # call volume), not just RPM -- gemma-4-26b and the flash-lite family
+        # have far more generous RPD than the general flash models.
         "light": [
+            "gemma-4-26b-a4b-it",
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-flash-lite",
             "gemini-flash-lite-latest",
-            "gemini-2.5-flash-lite",
-            "gemini-2.0-flash-lite",
-            "gemini-2.5-flash",
+            "gemini-3.8-flash",
+            "gemini-flash-latest",
         ],
+        # no reasoning/"pro"-tier model available on the free key -- reuses
+        # the best flash-lite/flash models as the least-bad heavy option.
         "heavy": [
-            "gemini-2.5-pro",
-            "gemini-1.5-pro",
-            "gemini-2.5-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.8-flash",
+            "gemma-4-26b-a4b-it",
         ],
     },
     "openrouter": {
@@ -87,23 +99,18 @@ CANDIDATES = {
 }
 
 # Used ONLY as a last-resort fallback when NONE of the curated CANDIDATES
-# above are live -- lets us pick a real, currently-existing model straight
-# from the live catalog by name heuristics, instead of giving up on an
-# entire provider tier just because our hand-curated list happens to be
-# stale (which free-tier catalogs guarantee will happen periodically).
+# above pass probing -- lets us pick a real, currently-live model straight
+# from the live catalog by name heuristics
 TIER_HINTS = {
-    "light": ["nano", "mini", "small", "8b", "9b", "7b", "4b", "3b", "2b", "1b"],
-    "heavy": ["ultra", "large", "70b", "72b", "405b", "550b", "34b", "32b"],
+    "light": ["nano", "mini", "small", "lite", "flash", "8b", "9b", "7b", "4b", "3b", "2b", "1b"],
+    "heavy": ["ultra", "large", "pro", "super", "70b", "72b", "405b", "550b", "120b", "34b", "32b"],
 }
 
 # OpenRouter mixes free (":free" suffix) and PAID models in the same
 # /models response. Falling back to "any live model" without filtering this
 # would risk silently picking a paid model and spending real money -- so
-# for openrouter specifically, the live pool is restricted to ":free" ids
-# before any heuristic matching happens. NVIDIA and Gemini don't use this
-# suffix convention -- verify with your account/provider docs whether every
-# model returned by their /models endpoint is actually covered under your
-# free credits before trusting an unfiltered heuristic pick from them too.
+# for openrouter specifically, the pool is restricted to ":free" ids before
+# any heuristic matching happens.
 FREE_SUFFIX = ":free"
 
 # Model names containing any of these are disqualified from the "light" tier
@@ -113,33 +120,56 @@ FREE_SUFFIX = ":free"
 # quick calls, not careful deliberation (that's what "heavy"/Judge is for).
 LIGHT_TIER_EXCLUDE = ["reasoning", "thinking", "-r1", "deepseek-r1", "-vl", "-omni"]
 
+# Model names containing any of these are disqualified from heuristic
+# fallback picks entirely, for ANY tier -- they're task-specialized models
+# (safety classifiers, translation, transcription, doc parsing, image/audio
+# generation, embodied/robotics) that will happily return 200 on a probe
+# but produce garbage for a Prosecutor/Defender/Judge text-reasoning prompt.
+TASK_SPECIALIZED_EXCLUDE = [
+    "safety-guard", "content-safety", "guard",
+    "translate", "riva",
+    "transcribe", "-tts",
+    "parse",
+    "diffusion", "diffusiongemma",
+    "calibration",
+    "robotics-er",
+    "muse-glimmer",
+]
 
-def _heuristic_pick_from_live(provider: str, tier: str, live_ids: set) -> str | None:
+MAX_PROBE_ATTEMPTS = 5  # bounded probing per (provider, tier) -- fail fast, no repeat of the 69-dead-model storm
+
+
+def _heuristic_candidates_from_live(provider: str, tier: str, live_ids: set) -> list[str]:
+    """Returns a priority-ordered list of live, task-appropriate candidates
+    to probe, used only when every curated CANDIDATES entry has failed."""
     pool = live_ids
     if provider == "openrouter":
         pool = {m for m in live_ids if m.endswith(FREE_SUFFIX)}
-        if not pool:
-            return None  # no free models available at all -- never guess a paid one
+
+    pool = {m for m in pool if not any(bad in m.lower() for bad in TASK_SPECIALIZED_EXCLUDE)}
 
     if tier == "light":
         filtered = {m for m in pool if not any(bad in m.lower() for bad in LIGHT_TIER_EXCLUDE)}
-        # only apply the exclusion if it doesn't wipe out the whole pool --
-        # a slow reasoning model beats having no light-tier model at all
-        if filtered:
+        if filtered:  # only apply if it doesn't wipe out the whole pool
             pool = filtered
 
+    ordered: list[str] = []
+    seen: set = set()
     for hint in TIER_HINTS[tier]:
-        matches = sorted(m for m in pool if hint in m.lower())
-        if matches:
-            return matches[0]
-
-    # no keyword hit at all -- still better to return SOMETHING live
-    # (already free/reasoning-filtered as applicable) than nothing
-    return sorted(pool)[0] if pool else None
+        for m in sorted(m for m in pool if hint in m.lower()):
+            if m not in seen:
+                ordered.append(m)
+                seen.add(m)
+    # anything left with no keyword hit at all, appended last
+    for m in sorted(pool):
+        if m not in seen:
+            ordered.append(m)
+            seen.add(m)
+    return ordered
 
 
 def _fetch_model_ids(provider: str) -> set | None:
-    """Returns set of live model ids from provider's /models endpoint, or None on failure."""
+    """Returns set of listed model ids from provider's /models endpoint, or None on failure."""
     import requests
 
     key = os.environ.get(API_KEY_ENV[provider])
@@ -159,33 +189,93 @@ def _fetch_model_ids(provider: str) -> set | None:
         return None
 
 
-def _pick(provider: str, tier: str, live_ids: set | None) -> str | None:
-    candidates = CANDIDATES[provider][tier]
-    for candidate in candidates:
-        if live_ids is None or candidate in live_ids:
-            return candidate
-    if live_ids is None:
-        # query itself failed (network/auth/timeout) -- we have no live
-        # signal either way, so the hardcoded top candidate is the best
-        # guess we have.
-        return candidates[0] if candidates else None
-    # None of our curated candidates are live -- don't give up on a working
-    # provider just because our hand-curated list is stale (expected to
-    # happen periodically). Fall back to picking a REAL live model instead,
-    # via name heuristics (openrouter is also filtered to ":free" ids only,
-    # so this can never accidentally select a paid model there).
-    fallback = _heuristic_pick_from_live(provider, tier, live_ids)
-    if fallback:
-        print(
-            f"[model_discovery] NOTE: none of the curated {provider}/{tier} "
-            f"candidates {candidates} are live -- CANDIDATES list is stale "
-            f"and should be updated. Using live catalog match '{fallback}' for now."
+def _probe(provider: str, model: str) -> str:
+    """
+    Fires one minimal real completion call to verify `model` actually serves
+    a response, not just appears in the listing. Returns:
+      "live"         -- responded successfully, safe to use
+      "dead"         -- confirmed not-found/bad-request for this model id
+      "inconclusive" -- rate-limited, network hiccup, or no budget to spare;
+                        NOT proof the model is dead, don't cache a negative
+                        result for this, just move on to the next candidate.
+    Goes through budget_tracker like any real dispatch, so probing can't
+    itself blow the RPM budget before the actual audit run starts.
+    """
+    key = os.environ.get(API_KEY_ENV[provider])
+    if not key:
+        return "inconclusive"
+    if not bt.check_and_increment(provider, model, estimated_tokens=10):
+        return "inconclusive"  # no budget to spare on a probe right now
+
+    import requests
+
+    try:
+        resp = requests.post(
+            CHAT_ENDPOINTS[provider],
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json={"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 4},
+            timeout=15,
         )
-        return fallback
+    except Exception:
+        return "inconclusive"
+
+    if resp.status_code == 200:
+        return "live"
+    if resp.status_code == 429:
+        return "inconclusive"
+    if resp.status_code in (400, 404):
+        return "dead"
+    return "inconclusive"  # auth/5xx/etc -- not confident enough to blacklist the model itself
+
+
+def _pick(provider: str, tier: str, live_ids: set | None) -> str | None:
+    """
+    Probes curated CANDIDATES in order (skipping any not present in the
+    listing, when a listing was available), stopping at the first live hit.
+    Falls back to probing the live catalog via heuristics if every curated
+    candidate fails. Bounded to MAX_PROBE_ATTEMPTS total probe calls so a
+    fully-dead provider fails fast instead of burning the run on retries.
+    """
+    candidates = CANDIDATES[provider][tier]
+
+    if live_ids is None:
+        # listing itself failed -- no live signal to probe against, best
+        # guess is the top hardcoded candidate, unverified.
+        return candidates[0] if candidates else None
+
+    attempts = 0
+    for candidate in candidates:
+        if candidate not in live_ids:
+            continue  # not even listed, don't waste a probe call on it
+        if attempts >= MAX_PROBE_ATTEMPTS:
+            break
+        attempts += 1
+        if _probe(provider, candidate) == "live":
+            return candidate
+
+    if attempts >= MAX_PROBE_ATTEMPTS:
+        print(f"[model_discovery] {provider}/{tier}: hit probe attempt cap, no curated candidate confirmed live")
+        return None
+
+    # none of our curated candidates are live -- fall back to a live,
+    # task-appropriate catalog match instead of giving up on the provider.
+    fallback_pool = _heuristic_candidates_from_live(provider, tier, live_ids)
+    for candidate in fallback_pool:
+        if attempts >= MAX_PROBE_ATTEMPTS:
+            break
+        attempts += 1
+        if _probe(provider, candidate) == "live":
+            print(
+                f"[model_discovery] NOTE: none of the curated {provider}/{tier} "
+                f"candidates {candidates} are live -- CANDIDATES list is stale "
+                f"and should be updated. Using probed live match '{candidate}' for now."
+            )
+            return candidate
+
     print(
         f"[model_discovery] WARNING: no usable model found for {provider}/{tier} "
-        f"at all -- curated candidates are stale AND no heuristic/free match "
-        f"exists in the live catalog. Skipping this provider/tier."
+        f"after {attempts} probe attempts -- curated candidates are stale AND "
+        f"no live/task-appropriate match probed successfully. Skipping this provider/tier."
     )
     return None
 
@@ -214,9 +304,10 @@ def discover_models(force_refresh: bool = False) -> dict:
     Returns {provider: {light: model_id, heavy: model_id}} -- same shape
     api_router expects in place of its static ROLE_MODELS placeholder.
 
-    Order of preference: fresh cache (<24h) -> live /models query per
-    provider -> stale cache for that provider -> first hardcoded candidate
-    (only if the live query itself failed -- see _pick()). Never raises.
+    Order of preference: fresh cache (<24h, already-probed picks) -> live
+    /models query + probe per provider -> stale cache for that provider ->
+    first hardcoded candidate, unprobed (only if the live query itself
+    failed). Never raises.
     """
     if not force_refresh:
         cached = _load_cache()
