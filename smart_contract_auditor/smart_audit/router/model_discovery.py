@@ -29,11 +29,13 @@ CACHE_TTL_SECONDS = 24 * 60 * 60  # refresh once a day
 
 MODELS_ENDPOINTS = {
     "nvidia": "https://integrate.api.nvidia.com/v1/models",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/models",
     "openrouter": "https://openrouter.ai/api/v1/models",
 }
 
 API_KEY_ENV = {
     "nvidia": "NVIDIA_API_KEY",
+    "gemini": "GEMINI_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
 }
 
@@ -53,6 +55,19 @@ CANDIDATES = {
             "nvidia/nemotron-3-ultra-550b-a55b",
             "nvidia/llama-3.1-nemotron-70b-instruct",
             "meta/llama-3.1-70b-instruct",
+        ],
+    },
+    "gemini": {
+        "light": [
+            "gemini-flash-lite-latest",
+            "gemini-2.5-flash-lite",
+            "gemini-2.0-flash-lite",
+            "gemini-2.5-flash",
+        ],
+        "heavy": [
+            "gemini-2.5-pro",
+            "gemini-1.5-pro",
+            "gemini-2.5-flash",
         ],
     },
     "openrouter": {
@@ -85,10 +100,10 @@ TIER_HINTS = {
 # /models response. Falling back to "any live model" without filtering this
 # would risk silently picking a paid model and spending real money -- so
 # for openrouter specifically, the live pool is restricted to ":free" ids
-# before any heuristic matching happens. NVIDIA doesn't use this suffix
-# convention -- verify with your account/provider docs whether every model
-# returned by their /models endpoint is actually covered under your free
-# credits before trusting an unfiltered heuristic pick from them too.
+# before any heuristic matching happens. NVIDIA and Gemini don't use this
+# suffix convention -- verify with your account/provider docs whether every
+# model returned by their /models endpoint is actually covered under your
+# free credits before trusting an unfiltered heuristic pick from them too.
 FREE_SUFFIX = ":free"
 
 # Model names containing any of these are disqualified from the "light" tier

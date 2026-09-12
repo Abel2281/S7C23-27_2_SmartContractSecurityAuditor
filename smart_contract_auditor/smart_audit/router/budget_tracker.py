@@ -28,6 +28,12 @@ PROVIDER_LIMITS = {
         "token_limit": None,      # no published cap; slices are small anyway
         "token_window": "daily",
     },
+    "gemini": {
+        "rpm_limit": 10,           # conservative floor of published 5-15 RPM range
+        "daily_limit": 250,        # conservative floor of published 100-1000 range
+        "token_limit": None,
+        "token_window": "daily",
+    },
     "openrouter": {
         "rpm_limit": 20,
         "daily_limit": 50,        # conservative floor of 50-1000 range

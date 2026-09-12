@@ -24,7 +24,7 @@ import time
 from . import budget_tracker as bt
 from . import model_discovery
 
-PROVIDER_TIERS = ["nvidia", "openrouter"]
+PROVIDER_TIERS = ["nvidia", "gemini", "openrouter"]
 
 ROLE_TIER = {
     "prosecutor": "light",
@@ -54,11 +54,13 @@ def refresh_models() -> dict:
 
 ENDPOINTS = {
     "nvidia": "https://integrate.api.nvidia.com/v1/chat/completions",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
     "openrouter": "https://openrouter.ai/api/v1/chat/completions",
 }
 
 API_KEY_ENV = {
     "nvidia": "NVIDIA_API_KEY",
+    "gemini": "GEMINI_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
 }
 
