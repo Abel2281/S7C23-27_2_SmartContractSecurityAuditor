@@ -109,26 +109,31 @@ def route(role: str, prompt: str, system: str | None = None) -> dict:
     if system:
         est_tokens += bt.estimate_tokens(system)
 
-    # prefer providers with soft headroom; is_near_limit False sorts first
-    ordered = sorted(PROVIDER_TIERS, key=lambda p: bt.is_near_limit(p))
+    role_models = _get_role_models()
+    candidates: list[tuple[str, str]] = []
+    for provider in PROVIDER_TIERS:
+        model = role_models.get(provider, {}).get(tier)
+        if model is None:
+            print(f"[api_router] role={role} provider={provider}/{tier}: SKIP (no usable model from discovery)")
+            continue
+        candidates.append((provider, model))
+
+    # prefer (provider, model) pairs with soft headroom; is_near_limit False sorts first
+    ordered = sorted(candidates, key=lambda pm: bt.is_near_limit(pm[0], pm[1]))
 
     last_error: Exception | None = None
 
-    for provider in ordered:
+    for provider, model in ordered:
         if not _api_key(provider):
             print(f"[api_router] role={role} provider={provider}: SKIP (no API key configured)")
             continue  # not configured, skip silently
 
-        was_near_limit = bt.is_near_limit(provider)
+        was_near_limit = bt.is_near_limit(provider, model)
 
-        if not bt.check_and_increment(provider, est_tokens):
-            print(f"[api_router] role={role} provider={provider}: SKIP (hard budget cap reached)")
-            continue  # hard cap hit, try next tier
+        if not bt.check_and_increment(provider, model, est_tokens):
+            print(f"[api_router] role={role} provider={provider} model={model}: SKIP (hard budget cap reached)")
+            continue  # hard cap hit, try next candidate
 
-        model = _get_role_models().get(provider, {}).get(tier)
-        if model is None:
-            print(f"[api_router] role={role} provider={provider}/{tier}: SKIP (no usable model from discovery)")
-            continue  # discovery found nothing usable for this provider/tier
         degraded = was_near_limit or provider != PROVIDER_TIERS[0]
 
         start = time.monotonic()
