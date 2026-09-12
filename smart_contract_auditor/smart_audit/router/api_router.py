@@ -13,12 +13,16 @@ Selection logic (single pass):
      its soft threshold, the response is flagged degraded=True so the CLI
      can print the [WARNING] degraded-mode line.
 
-model_discovery.py (not yet built) will replace the static ROLE_MODELS table
-below with a dynamic free-model catalog. Static ids are a placeholder so the
-router is testable end-to-end now.
+DIAGNOSTIC LOGGING (added post-Phase-3 real run): every attempt -- success
+or failure -- now prints role/provider/model/latency/degraded (or the error)
+to stdout. This is why a slow real run happens is otherwise invisible: the
+returned {content, provider, model, degraded} dict alone doesn't tell you
+which providers were tried and skipped, or how long the winning call took.
+Cheap to remove later once Rich-based terminal UI (Phase 3 TODO) replaces it.
 """
 
 import os
+import time
 
 from . import budget_tracker as bt
 from . import model_discovery
@@ -115,20 +119,29 @@ def route(role: str, prompt: str, system: str | None = None) -> dict:
 
     for provider in ordered:
         if not _api_key(provider):
+            print(f"[api_router] role={role} provider={provider}: SKIP (no API key configured)")
             continue  # not configured, skip silently
 
         was_near_limit = bt.is_near_limit(provider)
 
         if not bt.check_and_increment(provider, est_tokens):
+            print(f"[api_router] role={role} provider={provider}: SKIP (hard budget cap reached)")
             continue  # hard cap hit, try next tier
 
         model = _get_role_models().get(provider, {}).get(tier)
         if model is None:
+            print(f"[api_router] role={role} provider={provider}/{tier}: SKIP (no usable model from discovery)")
             continue  # discovery found nothing usable for this provider/tier
         degraded = was_near_limit or provider != PROVIDER_TIERS[0]
 
+        start = time.monotonic()
         try:
             content = _dispatch(provider, model, prompt, system)
+            elapsed = time.monotonic() - start
+            print(
+                f"[api_router] role={role} provider={provider} model={model} "
+                f"latency={elapsed:.1f}s degraded={degraded} -> SUCCESS"
+            )
             return {
                 "content": content,
                 "provider": provider,
@@ -136,6 +149,11 @@ def route(role: str, prompt: str, system: str | None = None) -> dict:
                 "degraded": degraded,
             }
         except Exception as e:  # noqa: BLE001 -- deliberately broad, we fall through tiers
+            elapsed = time.monotonic() - start
+            print(
+                f"[api_router] role={role} provider={provider} model={model} "
+                f"latency={elapsed:.1f}s -> FAILED: {type(e).__name__}: {e}"
+            )
             last_error = e
             continue
 

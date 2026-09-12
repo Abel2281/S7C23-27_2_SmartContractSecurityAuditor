@@ -1,26 +1,36 @@
 """
 cli.py
-Terminal entry point for ChainGuard Phase 1 (preprocessing pipeline).
+Terminal entry point for ChainGuard.
 
 Usage:
     smart-audit run contracts/Vulnerabilities.sol
     smart-audit run ./Vulnerabilities.sol
     smart-audit run Vulnerabilities.sol          # bare filename -> looked up in contracts/
 
-Flow (all in-memory, one disk write at the end):
+Flow (Phase 1 in-memory, one disk write; Phase 3 courtroom, one more disk write):
     resolve path -> slither_runner.run_slither -> json_filter.filter_findings
     -> code_slicer.slice_all -> write output/<contract_stem>_phase1.json
+    -> orchestrator.audit_contract (Prosecutor -> Defender -> Judge per finding,
+       cache-gated) -> write output/<contract_stem>_debate_records.json
+
+The debate-records write is a stand-in for Phase 4's real report_generator.py
+(a Markdown report) -- raw JSON for now so results are actually inspectable
+before that module exists.
 """
 
 import json
 from pathlib import Path
 
 import typer
+from dotenv import load_dotenv
 from typing_extensions import Annotated
 from typing import Optional
 from smart_audit.preprocessor.slither_runner import resolve_target_path, run_slither
 from smart_audit.preprocessor.json_filter import filter_findings
 from smart_audit.preprocessor.code_slicer import slice_all
+from smart_audit import orchestrator
+from smart_audit.router.api_router import AllProvidersExhaustedError
+from smart_audit.agents.schemas import Verdict
 
 from smart_audit.utils.terminal_ui import (
     print_banner,
@@ -39,6 +49,9 @@ app = typer.Typer(
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = PROJECT_ROOT / "output"
 
+# Load .env from project root BEFORE anything
+load_dotenv(PROJECT_ROOT / ".env")
+
 
 @app.callback()
 def main():
@@ -52,6 +65,32 @@ def _write_phase1_output(sliced: list[dict], contract_path: Path) -> Path:
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(sliced, f, indent=2)
     return out_path
+
+
+def _write_debate_records(records: list, contract_path: Path) -> Path:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = OUTPUT_DIR / f"{contract_path.stem}_debate_records.json"
+    payload = [r.model_dump(mode="json") for r in records]
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    return out_path
+
+
+def _print_courtroom_summary(records: list) -> None:
+    confirmed = sum(1 for r in records if r.judge.verdict == Verdict.CONFIRMED)
+    false_positive = sum(1 for r in records if r.judge.verdict == Verdict.FALSE_POSITIVE)
+    inconclusive = sum(1 for r in records if r.judge.verdict == Verdict.INCONCLUSIVE)
+    degraded_count = sum(1 for r in records if r.degraded_mode)
+
+    print_success(
+        f"Courtroom complete: {confirmed} confirmed, "
+        f"{false_positive} false positive, {inconclusive} inconclusive"
+    )
+    if degraded_count:
+        print_warning(
+            f"{degraded_count}/{len(records)} finding(s) ran in degraded mode "
+            f"(fallback provider/model, or a synthesized fallback verdict)."
+        )
 
 
 @app.command(name="run")
@@ -69,12 +108,17 @@ def run_cmd(
         typer.Option(
             "--fast",
             "-f",
-            help="Reserved for future backoff/delay buffers between agent calls (Phase 2). No-op today.",
+            help="Reserved for future backoff/delay buffers between agent calls. No-op today.",
         ),
     ] = False,
+    # TODO (future): a --skip-courtroom flag to run Phase 1 only, no API keys/
+    # budget touched. Deliberately not adding now -- keeping the CLI surface
+    # minimal until there's an actual need (e.g. CI runs that shouldn't burn
+    # LLM budget). Revisit post-Phase-3.
 ):
     """
-    Run static analysis and pre-processing against a Solidity contract.
+    Run static analysis, pre-processing, and (unless skipped) the multi-agent
+    courtroom pipeline against a Solidity contract.
     """
     print_banner()
 
@@ -91,7 +135,7 @@ def run_cmd(
     print_success(f"Validated target path: {contract_path.name}")
 
     if fast:
-        print_warning("Fast mode flag set (no-op until Phase 2 delay buffers exist).")
+        print_warning("Fast mode flag set (no-op until delay buffers exist).")
 
     # 2. Slither analysis (in-memory dict, scratch json deleted internally)
     print_info("[1/3] Running Slither analysis...")
@@ -113,9 +157,37 @@ def run_cmd(
     print_info("[3/3] Extracting AST function code slices...")
     sliced_findings = slice_all(filtered_findings, contract_path)
 
-    # 5. Single end-of-phase write
-    out_path = _write_phase1_output(sliced_findings, contract_path)
-    print_success(f"Phase 1 pre-processing complete -> {out_path.name}. Ready for Phase 2.")
+    # 5. Single end-of-phase-1 write
+    phase1_path = _write_phase1_output(sliced_findings, contract_path)
+    print_success(f"Phase 1 pre-processing complete -> {phase1_path.name}.")
+
+    if not sliced_findings:
+        print_info("No findings survived filtering -- nothing for the courtroom to review.")
+        return
+
+    # 6. Courtroom pipeline: Prosecutor -> Defender -> Judge, per finding, cache-gated.
+    # contract_source is read fresh here (not reassembled from code_slicer's
+    # line-numbered slices) so hash_cache keys off the exact same bytes
+    # slither/code_slicer already ran against.
+    print_info(
+        f"Running courtroom pipeline on {len(sliced_findings)} finding(s) "
+        f"(Prosecutor -> Defender -> Judge)..."
+    )
+    contract_source = contract_path.read_text(encoding="utf-8", errors="replace")
+
+    try:
+        records = orchestrator.audit_contract(contract_source, sliced_findings)
+    except AllProvidersExhaustedError as e:
+        print_error(
+            f"All LLM providers exhausted -- halting courtroom pipeline partway through: {e}"
+        )
+        raise typer.Exit(code=1)
+
+    _print_courtroom_summary(records)
+
+    # 7. Single end-of-phase-3 write (stand-in for Phase 4's report_generator.py)
+    debate_path = _write_debate_records(records, contract_path)
+    print_success(f"Debate records written -> {debate_path.name}.")
 
 
 if __name__ == "__main__":
