@@ -22,6 +22,7 @@ import json
 from pathlib import Path
 
 import typer
+from dotenv import load_dotenv
 from typing_extensions import Annotated
 from typing import Optional
 from smart_audit.preprocessor.slither_runner import resolve_target_path, run_slither
@@ -47,6 +48,9 @@ app = typer.Typer(
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = PROJECT_ROOT / "output"
+
+# Load .env from project root BEFORE anything
+load_dotenv(PROJECT_ROOT / ".env")
 
 
 @app.callback()
