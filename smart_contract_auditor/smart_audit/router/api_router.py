@@ -13,12 +13,9 @@ Selection logic (single pass):
      its soft threshold, the response is flagged degraded=True so the CLI
      can print the [WARNING] degraded-mode line.
 
-DIAGNOSTIC LOGGING (added post-Phase-3 real run): every attempt -- success
-or failure -- now prints role/provider/model/latency/degraded (or the error)
-to stdout. This is why a slow real run happens is otherwise invisible: the
-returned {content, provider, model, degraded} dict alone doesn't tell you
-which providers were tried and skipped, or how long the winning call took.
-Cheap to remove later once Rich-based terminal UI (Phase 3 TODO) replaces it.
+Every attempt -- success or failure -- prints role/provider/model/latency/
+degraded (or the error) to stdout, since the returned dict alone doesn't
+show which providers were tried/skipped or how long the winning call took.
 """
 
 import os
@@ -27,7 +24,7 @@ import time
 from . import budget_tracker as bt
 from . import model_discovery
 
-PROVIDER_TIERS = ["nvidia", "mistral", "openrouter"]
+PROVIDER_TIERS = ["nvidia", "openrouter"]
 
 ROLE_TIER = {
     "prosecutor": "light",
@@ -57,13 +54,11 @@ def refresh_models() -> dict:
 
 ENDPOINTS = {
     "nvidia": "https://integrate.api.nvidia.com/v1/chat/completions",
-    "mistral": "https://api.mistral.ai/v1/chat/completions",
     "openrouter": "https://openrouter.ai/api/v1/chat/completions",
 }
 
 API_KEY_ENV = {
     "nvidia": "NVIDIA_API_KEY",
-    "mistral": "MISTRAL_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
 }
 

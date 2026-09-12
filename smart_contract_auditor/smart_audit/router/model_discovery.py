@@ -14,9 +14,9 @@ every provider's /models endpoint on every run. If a provider is unreachable,
 falls back to stale cache, then to the first hardcoded candidate -- this
 function must never raise; api_router always needs *a* model id to try.
 
-FIX (post-Phase-3 real-world run): _pick() previously fell back to
-candidates[0] even when the live /models query SUCCEEDED and proved every
-candidate was dead -- guaranteeing a 404 on dispatch. See _pick() below.
+_pick() only falls back to candidates[0] when the live /models query itself
+failed. If the query succeeded and proved every candidate dead, it falls
+back to _heuristic_pick_from_live() instead of guaranteeing a 404.
 """
 
 import json
@@ -29,13 +29,11 @@ CACHE_TTL_SECONDS = 24 * 60 * 60  # refresh once a day
 
 MODELS_ENDPOINTS = {
     "nvidia": "https://integrate.api.nvidia.com/v1/models",
-    "mistral": "https://api.mistral.ai/v1/models",
     "openrouter": "https://openrouter.ai/api/v1/models",
 }
 
 API_KEY_ENV = {
     "nvidia": "NVIDIA_API_KEY",
-    "mistral": "MISTRAL_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
 }
 
@@ -55,15 +53,6 @@ CANDIDATES = {
             "nvidia/nemotron-3-ultra-550b-a55b",
             "nvidia/llama-3.1-nemotron-70b-instruct",
             "meta/llama-3.1-70b-instruct",
-        ],
-    },
-    "mistral": {
-        "light": [
-            "mistral-small-latest",
-            "open-mistral-nemo",
-        ],
-        "heavy": [
-            "mistral-large-latest",
         ],
     },
     "openrouter": {
@@ -96,10 +85,10 @@ TIER_HINTS = {
 # /models response. Falling back to "any live model" without filtering this
 # would risk silently picking a paid model and spending real money -- so
 # for openrouter specifically, the live pool is restricted to ":free" ids
-# before any heuristic matching happens. NVIDIA/Mistral don't use this
-# suffix convention; verify with your account/provider docs whether every
-# model returned by their /models endpoint is actually covered under your
-# free credits before trusting an unfiltered heuristic pick from them too.
+# before any heuristic matching happens. NVIDIA doesn't use this suffix
+# convention -- verify with your account/provider docs whether every model
+# returned by their /models endpoint is actually covered under your free
+# credits before trusting an unfiltered heuristic pick from them too.
 FREE_SUFFIX = ":free"
 
 # Model names containing any of these are disqualified from the "light" tier
@@ -107,10 +96,6 @@ FREE_SUFFIX = ":free"
 # tokens generated before every response, which defeats the point of "light"
 # being the fast, high-call-volume tier -- Prosecutor/Defender need many
 # quick calls, not careful deliberation (that's what "heavy"/Judge is for).
-# Confirmed cause of a real ~3min run: the heuristic picked
-# "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning" for light tier because
-# "nano" hit a size keyword -- but it's a reasoning model, so every single
-# Prosecutor/Defender call paid a full reasoning-token tax.
 LIGHT_TIER_EXCLUDE = ["reasoning", "thinking", "-r1", "deepseek-r1", "-vl", "-omni"]
 
 

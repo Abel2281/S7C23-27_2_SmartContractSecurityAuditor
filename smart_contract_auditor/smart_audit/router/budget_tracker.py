@@ -28,12 +28,6 @@ PROVIDER_LIMITS = {
         "token_limit": None,      # no published cap; slices are small anyway
         "token_window": "daily",
     },
-    "mistral": {
-        "rpm_limit": None,        # not published, rely on token allowance
-        "daily_limit": None,
-        "token_limit": 1_000_000_000,
-        "token_window": "monthly",
-    },
     "openrouter": {
         "rpm_limit": 20,
         "daily_limit": 50,        # conservative floor of 50-1000 range
