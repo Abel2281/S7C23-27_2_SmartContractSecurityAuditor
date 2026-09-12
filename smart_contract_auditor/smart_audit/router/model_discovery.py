@@ -66,20 +66,22 @@ CANDIDATES = {
         # ordered by daily-request headroom first (light tier needs sustained
         # call volume), not just RPM -- gemma-4-26b and the flash-lite family
         # have far more generous RPD than the general flash models.
+        # NOTE: Google's live catalog returns ids prefixed "models/..." --
+        # candidates must include that prefix or they can never match live_ids.
         "light": [
-            "gemma-4-26b-a4b-it",
-            "gemini-3.5-flash-lite",
-            "gemini-3.1-flash-lite",
-            "gemini-flash-lite-latest",
-            "gemini-3.8-flash",
-            "gemini-flash-latest",
+            "models/gemma-4-26b-a4b-it",
+            "models/gemini-3.5-flash-lite",
+            "models/gemini-3.1-flash-lite",
+            "models/gemini-flash-lite-latest",
+            "models/gemini-3.8-flash",
+            "models/gemini-flash-latest",
         ],
         # no reasoning/"pro"-tier model available on the free key -- reuses
         # the best flash-lite/flash models as the least-bad heavy option.
         "heavy": [
-            "gemini-3.5-flash-lite",
-            "gemini-3.8-flash",
-            "gemma-4-26b-a4b-it",
+            "models/gemini-3.5-flash-lite",
+            "models/gemini-3.8-flash",
+            "models/gemma-4-26b-a4b-it",
         ],
     },
     "openrouter": {
