@@ -32,6 +32,14 @@ ROLE_TIER = {
     "judge": "heavy",
 }
 
+# light tier exists to serve many fast calls (Prosecutor/Defender) -- a call
+# that hasn't responded in 20-25s isn't doing that job regardless of whether
+# it eventually succeeds, so it's capped well below heavy tier's timeout.
+TIER_TIMEOUT = {
+    "light": 25,
+    "heavy": 60,
+}
+
 # lazy, process-local cache -- avoids re-reading the model_catalog.json
 # cache file on every single route() call. discover_models() itself has
 # its own 24h disk-cache TTL underneath this.
@@ -73,7 +81,7 @@ def _api_key(provider: str) -> str | None:
     return os.environ.get(API_KEY_ENV[provider])
 
 
-def _dispatch(provider: str, model: str, prompt: str, system: str | None) -> str:
+def _dispatch(provider: str, model: str, prompt: str, system: str | None, timeout: int) -> str:
     """Fires the actual HTTP call. Raises on network/HTTP error -- caller catches."""
     import requests
 
@@ -87,7 +95,7 @@ def _dispatch(provider: str, model: str, prompt: str, system: str | None) -> str
         ENDPOINTS[provider],
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         json={"model": model, "messages": messages},
-        timeout=60,
+        timeout=timeout,
     )
     resp.raise_for_status()
     data = resp.json()
@@ -104,6 +112,7 @@ def route(role: str, prompt: str, system: str | None = None) -> dict:
     if role not in ROLE_TIER:
         raise ValueError(f"unknown role: {role}")
     tier = ROLE_TIER[role]
+    timeout = TIER_TIMEOUT[tier]
 
     est_tokens = bt.estimate_tokens(prompt)
     if system:
@@ -138,7 +147,7 @@ def route(role: str, prompt: str, system: str | None = None) -> dict:
 
         start = time.monotonic()
         try:
-            content = _dispatch(provider, model, prompt, system)
+            content = _dispatch(provider, model, prompt, system, timeout)
             elapsed = time.monotonic() - start
             print(
                 f"[api_router] role={role} provider={provider} model={model} "
