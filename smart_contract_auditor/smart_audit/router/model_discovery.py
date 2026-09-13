@@ -46,8 +46,6 @@ API_KEY_ENV = {
     "openrouter": "OPENROUTER_API_KEY",
 }
 
-# priority-ordered candidates per provider/tier -- a PREFERENCE order, not a
-# requirement. Each is probed in order; first one to actually respond wins.
 CANDIDATES = {
     "nvidia": {
         "light": [
@@ -102,7 +100,7 @@ CANDIDATES = {
 
 # Used ONLY as a last-resort fallback when NONE of the curated CANDIDATES
 # above pass probing -- lets us pick a real, currently-live model straight
-# from the live catalog by name heuristics
+# from the live catalog by name heuristics.
 TIER_HINTS = {
     "light": ["nano", "mini", "small", "lite", "flash", "8b", "9b", "7b", "4b", "3b", "2b", "1b"],
     "heavy": ["ultra", "large", "pro", "super", "70b", "72b", "405b", "550b", "120b", "34b", "32b"],
@@ -138,7 +136,14 @@ TASK_SPECIALIZED_EXCLUDE = [
     "muse-glimmer",
 ]
 
-MAX_PROBE_ATTEMPTS = 5  # bounded probing per (provider, tier) -- fail fast, no repeat of the 69-dead-model storm
+# Probing costs a real API call each time -- this is a direct tradeoff
+# against tight-tier daily budgets. NVIDIA (40 RPM, no daily cap) barely
+# notices probing several candidates; Gemini's tight tier (5 RPM/20 RPD)
+# can lose a meaningful chunk of that day's budget to probing alone before
+# a single real audit call happens. Cached 24h, so it's a once-a-day cost,
+# but keep both constants modest for that reason rather than maximizing them.
+MAX_PROBE_ATTEMPTS = 8    # total probe calls allowed per (provider, tier)
+MAX_LIVE_CANDIDATES = 5   # stop early once this many validated live models are found
 
 
 def _heuristic_candidates_from_live(provider: str, tier: str, live_ids: set) -> list[str]:
@@ -230,56 +235,69 @@ def _probe(provider: str, model: str) -> str:
     return "inconclusive"  # auth/5xx/etc -- not confident enough to blacklist the model itself
 
 
-def _pick(provider: str, tier: str, live_ids: set | None) -> str | None:
+def _pick_multi(provider: str, tier: str, live_ids: set | None) -> list[str]:
     """
     Probes curated CANDIDATES in order (skipping any not present in the
-    listing, when a listing was available), stopping at the first live hit.
-    Falls back to probing the live catalog via heuristics if every curated
-    candidate fails. Bounded to MAX_PROBE_ATTEMPTS total probe calls so a
-    fully-dead provider fails fast instead of burning the run on retries.
+    listing, when a listing was available), collecting every one that
+    passes probing -- not just the first -- up to MAX_LIVE_CANDIDATES.
+    This gives api_router.route() several validated fallbacks per
+    provider/tier, so one bad model doesn't force falling through to an
+    entirely different provider on every call.
+
+    Falls back to probing the live catalog via heuristics only if NO
+    curated candidate passed. Bounded to MAX_PROBE_ATTEMPTS total probe
+    calls per (provider, tier) so a mostly-dead provider fails fast.
+    Returns validated candidates in priority order; empty list if none
+    could be confirmed live.
     """
     candidates = CANDIDATES[provider][tier]
 
     if live_ids is None:
         # listing itself failed -- no live signal to probe against, best
         # guess is the top hardcoded candidate, unverified.
-        return candidates[0] if candidates else None
+        return candidates[:1] if candidates else []
 
+    live_found: list[str] = []
     attempts = 0
     for candidate in candidates:
         if candidate not in live_ids:
             continue  # not even listed, don't waste a probe call on it
-        if attempts >= MAX_PROBE_ATTEMPTS:
+        if attempts >= MAX_PROBE_ATTEMPTS or len(live_found) >= MAX_LIVE_CANDIDATES:
             break
         attempts += 1
         if _probe(provider, candidate) == "live":
-            return candidate
+            live_found.append(candidate)
+
+    if live_found:
+        return live_found
 
     if attempts >= MAX_PROBE_ATTEMPTS:
         print(f"[model_discovery] {provider}/{tier}: hit probe attempt cap, no curated candidate confirmed live")
-        return None
+        return []
 
-    # none of our curated candidates are live -- fall back to a live,
-    # task-appropriate catalog match instead of giving up on the provider.
+    # none of our curated candidates are live -- fall back to live,
+    # task-appropriate catalog matches instead of giving up on the provider.
     fallback_pool = _heuristic_candidates_from_live(provider, tier, live_ids)
     for candidate in fallback_pool:
-        if attempts >= MAX_PROBE_ATTEMPTS:
+        if attempts >= MAX_PROBE_ATTEMPTS or len(live_found) >= MAX_LIVE_CANDIDATES:
             break
         attempts += 1
         if _probe(provider, candidate) == "live":
-            print(
-                f"[model_discovery] NOTE: none of the curated {provider}/{tier} "
-                f"candidates {candidates} are live -- CANDIDATES list is stale "
-                f"and should be updated. Using probed live match '{candidate}' for now."
-            )
-            return candidate
+            live_found.append(candidate)
 
-    print(
-        f"[model_discovery] WARNING: no usable model found for {provider}/{tier} "
-        f"after {attempts} probe attempts -- curated candidates are stale AND "
-        f"no live/task-appropriate match probed successfully. Skipping this provider/tier."
-    )
-    return None
+    if live_found:
+        print(
+            f"[model_discovery] NOTE: none of the curated {provider}/{tier} "
+            f"candidates {candidates} are live -- CANDIDATES list is stale "
+            f"and should be updated. Using probed live matches {live_found} for now."
+        )
+    else:
+        print(
+            f"[model_discovery] WARNING: no usable model found for {provider}/{tier} "
+            f"after {attempts} probe attempts -- curated candidates are stale AND "
+            f"no live/task-appropriate match probed successfully. Skipping this provider/tier."
+        )
+    return live_found
 
 
 def _load_cache(ignore_ttl: bool = False) -> dict | None:
@@ -303,13 +321,16 @@ def _save_cache(catalog: dict) -> None:
 
 def discover_models(force_refresh: bool = False) -> dict:
     """
-    Returns {provider: {light: model_id, heavy: model_id}} -- same shape
-    api_router expects in place of its static ROLE_MODELS placeholder.
+    Returns {provider: {light: [model_id, ...], heavy: [model_id, ...]}} --
+    each tier maps to a priority-ordered list of validated-live models
+    (up to MAX_LIVE_CANDIDATES), not a single pick. api_router.route() can
+    fall through to the next candidate on the same provider before hopping
+    to a different provider tier.
 
     Order of preference: fresh cache (<24h, already-probed picks) -> live
     /models query + probe per provider -> stale cache for that provider ->
-    first hardcoded candidate, unprobed (only if the live query itself
-    failed). Never raises.
+    top hardcoded candidate as a single-item list, unprobed (only if the
+    live query itself failed). Never raises.
     """
     if not force_refresh:
         cached = _load_cache()
@@ -325,7 +346,7 @@ def discover_models(force_refresh: bool = False) -> dict:
             catalog[provider] = stale[provider]  # keep last-known-good
             continue
         catalog[provider] = {
-            tier: _pick(provider, tier, live_ids) for tier in CANDIDATES[provider]
+            tier: _pick_multi(provider, tier, live_ids) for tier in CANDIDATES[provider]
         }
 
     _save_cache(catalog)
