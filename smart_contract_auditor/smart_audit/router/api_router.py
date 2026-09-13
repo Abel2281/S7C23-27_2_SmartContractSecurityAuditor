@@ -20,16 +20,18 @@ show which providers were tried/skipped or how long the winning call took.
 
 import os
 import time
-
 from . import budget_tracker as bt
 from . import model_discovery
-
-PROVIDER_TIERS = ["nvidia", "groq", "gemini", "openrouter"]
 
 ROLE_TIER = {
     "prosecutor": "light",
     "defender": "light",
     "judge": "heavy",
+}
+
+TIER_PROVIDER_ORDER = {
+    "light": ["groq", "gemini", "nvidia", "openrouter"],
+    "heavy": ["nvidia", "groq", "gemini", "openrouter"],
 }
 
 TIER_TIMEOUT = {
@@ -132,8 +134,9 @@ def route(role: str, prompt: str, system: str | None = None) -> dict:
     # through to the next candidate on the SAME provider before hopping to
     # an entirely different provider tier.
     role_models = _get_role_models()
+    provider_order = TIER_PROVIDER_ORDER[tier]
     candidates: list[tuple[str, str]] = []
-    for provider in PROVIDER_TIERS:
+    for provider in provider_order:
         models = role_models.get(provider, {}).get(tier, [])
         if not models:
             print(f"[api_router] role={role} provider={provider}/{tier}: SKIP (no usable model from discovery)")
@@ -162,7 +165,7 @@ def route(role: str, prompt: str, system: str | None = None) -> dict:
             print(f"[api_router] role={role} provider={provider} model={model}: SKIP (hard budget cap reached)")
             continue  # hard cap hit, try next candidate
 
-        degraded = was_near_limit or provider != PROVIDER_TIERS[0]
+        degraded = was_near_limit or provider != provider_order[0]
 
         start = time.monotonic()
         try:
