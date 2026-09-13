@@ -32,9 +32,6 @@ ROLE_TIER = {
     "judge": "heavy",
 }
 
-# light tier exists to serve many fast calls (Prosecutor/Defender) -- a call
-# that hasn't responded in 20-25s isn't doing that job regardless of whether
-# it eventually succeeds, so it's capped well below heavy tier's timeout.
 TIER_TIMEOUT = {
     "light": 25,
     "heavy": 60,
@@ -75,6 +72,14 @@ API_KEY_ENV = {
 
 class AllProvidersExhaustedError(RuntimeError):
     """Raised when every configured provider is either out of budget or failed."""
+
+
+# process-local, resets on next CLI invocation. Once a (provider, model)
+# pair fails a real dispatch this run, it's skipped for the rest of the run
+# rather than retried into the same wall on every subsequent role call.
+# Deliberately NOT persisted -- a bad call today (timeout, transient
+# overload) shouldn't permanently blacklist a model discovery confirmed live.
+_failed_this_run: set[tuple[str, str]] = set()
 
 
 def _api_key(provider: str) -> str | None:
@@ -118,16 +123,28 @@ def route(role: str, prompt: str, system: str | None = None) -> dict:
     if system:
         est_tokens += bt.estimate_tokens(system)
 
+    # resolve candidate models per provider first -- budget limits are keyed
+    # by (provider, model), so we need the model in hand before we can check
+    # or sort by headroom. Each provider now offers a priority-ordered LIST
+    # of validated candidates, not just one -- so a single bad model falls
+    # through to the next candidate on the SAME provider before hopping to
+    # an entirely different provider tier.
     role_models = _get_role_models()
     candidates: list[tuple[str, str]] = []
     for provider in PROVIDER_TIERS:
-        model = role_models.get(provider, {}).get(tier)
-        if model is None:
+        models = role_models.get(provider, {}).get(tier, [])
+        if not models:
             print(f"[api_router] role={role} provider={provider}/{tier}: SKIP (no usable model from discovery)")
             continue
-        candidates.append((provider, model))
+        for model in models:
+            if (provider, model) in _failed_this_run:
+                print(f"[api_router] role={role} provider={provider} model={model}: SKIP (failed earlier this run)")
+                continue
+            candidates.append((provider, model))
 
-    # prefer (provider, model) pairs with soft headroom; is_near_limit False sorts first
+    # prefer (provider, model) pairs with soft headroom; is_near_limit False
+    # sorts first. Stable sort preserves provider-then-candidate priority
+    # order among pairs with the same near_limit status.
     ordered = sorted(candidates, key=lambda pm: bt.is_near_limit(pm[0], pm[1]))
 
     last_error: Exception | None = None
@@ -165,6 +182,7 @@ def route(role: str, prompt: str, system: str | None = None) -> dict:
                 f"[api_router] role={role} provider={provider} model={model} "
                 f"latency={elapsed:.1f}s -> FAILED: {type(e).__name__}: {e}"
             )
+            _failed_this_run.add((provider, model))
             last_error = e
             continue
 
