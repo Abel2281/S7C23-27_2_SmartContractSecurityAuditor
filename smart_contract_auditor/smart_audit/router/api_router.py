@@ -24,7 +24,7 @@ import time
 from . import budget_tracker as bt
 from . import model_discovery
 
-PROVIDER_TIERS = ["nvidia", "gemini", "openrouter"]
+PROVIDER_TIERS = ["nvidia", "groq", "gemini", "openrouter"]
 
 ROLE_TIER = {
     "prosecutor": "light",
@@ -34,7 +34,7 @@ ROLE_TIER = {
 
 TIER_TIMEOUT = {
     "light": 25,
-    "heavy": 60,
+    "heavy": 40,
 }
 
 # lazy, process-local cache -- avoids re-reading the model_catalog.json
@@ -59,12 +59,14 @@ def refresh_models() -> dict:
 
 ENDPOINTS = {
     "nvidia": "https://integrate.api.nvidia.com/v1/chat/completions",
+    "groq": "https://api.groq.com/openai/v1/chat/completions",
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
     "openrouter": "https://openrouter.ai/api/v1/chat/completions",
 }
 
 API_KEY_ENV = {
     "nvidia": "NVIDIA_API_KEY",
+    "groq": "GROQ_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
 }

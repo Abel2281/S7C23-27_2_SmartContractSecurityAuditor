@@ -58,6 +58,19 @@ PROVIDER_LIMITS = {
             "models/gemini-3.8-flash":              {"rpm_limit": 5,  "daily_limit": 20,     "token_limit": None, "token_window": "daily"},
         },
     },
+    "groq": {
+
+        "default": {"rpm_limit": 30, "daily_limit": 250, "token_limit": None, "token_window": "daily"},
+        "models": {
+            "qwen/qwen3.8-27b":     {"rpm_limit": 30, "daily_limit": 1_000, "token_limit": None, "token_window": "daily"},
+            "qwen/qwen3.6-27b":     {"rpm_limit": 30, "daily_limit": 1_000, "token_limit": None, "token_window": "daily"},
+            "openai/gpt-oss-20b":   {"rpm_limit": 30, "daily_limit": 1_000, "token_limit": None, "token_window": "daily"},
+            "openai/gpt-oss-120b":  {"rpm_limit": 30, "daily_limit": 1_000, "token_limit": None, "token_window": "daily"},
+            "allam-2-7b":           {"rpm_limit": 30, "daily_limit": 7_000, "token_limit": None, "token_window": "daily"},
+            "groq/compound":        {"rpm_limit": 30, "daily_limit": 250,   "token_limit": None, "token_window": "daily"},
+            "groq/compound-mini":   {"rpm_limit": 30, "daily_limit": 250,   "token_limit": None, "token_window": "daily"},
+        },
+    },
     "openrouter": {
         "default": {
             "rpm_limit": 20,

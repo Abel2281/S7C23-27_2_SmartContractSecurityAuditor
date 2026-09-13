@@ -30,34 +30,53 @@ CACHE_TTL_SECONDS = 24 * 60 * 60  # refresh once a day
 
 MODELS_ENDPOINTS = {
     "nvidia": "https://integrate.api.nvidia.com/v1/models",
+    "groq": "https://api.groq.com/openai/v1/models",
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/models",
     "openrouter": "https://openrouter.ai/api/v1/models",
 }
 
 CHAT_ENDPOINTS = {
     "nvidia": "https://integrate.api.nvidia.com/v1/chat/completions",
+    "groq": "https://api.groq.com/openai/v1/chat/completions",
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
     "openrouter": "https://openrouter.ai/api/v1/chat/completions",
 }
 
 API_KEY_ENV = {
     "nvidia": "NVIDIA_API_KEY",
+    "groq": "GROQ_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
 }
 
+# priority-ordered candidates per provider/tier -- a PREFERENCE order, not a
+# requirement. Each is probed in order; first one to actually respond wins.
 CANDIDATES = {
     "nvidia": {
         "light": [
-            "nvidia/nemotron-3.5-lightning-30b-a3b",
             "openai/gpt-oss-20b",
             "z-ai/glm-5.3-flash",
             "nvidia/llama-3.1-nemotron-nano-8b-v1",
+            "nvidia/nemotron-3.5-lightning-30b-a3b",
         ],
         "heavy": [
             "nvidia/nemotron-3-super-120b-a12b",
-            "z-ai/glm-5.3-flash",
             "openai/gpt-oss-20b",
+            "z-ai/glm-5.3-flash",
+        ],
+    },
+    "groq": {
+        "light": [
+            "openai/gpt-oss-20b",
+            "qwen/qwen3.8-27b",
+            "qwen/qwen3.6-27b",
+            "allam-2-7b",
+            "groq/compound-mini",
+        ],
+        "heavy": [
+            "openai/gpt-oss-120b",
+            "groq/compound",
+            "qwen/qwen3.8-27b",
         ],
     },
     "gemini": {
@@ -126,7 +145,7 @@ LIGHT_TIER_EXCLUDE = ["reasoning", "thinking", "-r1", "deepseek-r1", "-vl", "-om
 # generation, embodied/robotics) that will happily return 200 on a probe
 # but produce garbage for a Prosecutor/Defender/Judge text-reasoning prompt.
 TASK_SPECIALIZED_EXCLUDE = [
-    "safety-guard", "content-safety", "guard",
+    "safety-guard", "content-safety", "guard", "safeguard",
     "translate", "riva",
     "transcribe", "-tts",
     "parse",
@@ -134,6 +153,8 @@ TASK_SPECIALIZED_EXCLUDE = [
     "calibration",
     "robotics-er",
     "muse-glimmer",
+    "orpheus", "whisper",
+    "prompt-guard",
 ]
 
 # Probing costs a real API call each time -- this is a direct tradeoff
@@ -143,7 +164,7 @@ TASK_SPECIALIZED_EXCLUDE = [
 # a single real audit call happens. Cached 24h, so it's a once-a-day cost,
 # but keep both constants modest for that reason rather than maximizing them.
 MAX_PROBE_ATTEMPTS = 8    # total probe calls allowed per (provider, tier)
-MAX_LIVE_CANDIDATES = 5   # stop early once this many validated live models are found
+MAX_LIVE_CANDIDATES = 3   # stop early once this many validated live models are found
 
 
 def _heuristic_candidates_from_live(provider: str, tier: str, live_ids: set) -> list[str]:
