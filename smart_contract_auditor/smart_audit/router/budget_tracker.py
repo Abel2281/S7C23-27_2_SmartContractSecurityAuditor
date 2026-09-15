@@ -59,7 +59,6 @@ PROVIDER_LIMITS = {
         },
     },
     "groq": {
-
         "default": {"rpm_limit": 30, "daily_limit": 250, "token_limit": None, "token_window": "daily"},
         "models": {
             "qwen/qwen3.8-27b":     {"rpm_limit": 30, "daily_limit": 1_000, "token_limit": None, "token_window": "daily"},
@@ -69,14 +68,6 @@ PROVIDER_LIMITS = {
             "allam-2-7b":           {"rpm_limit": 30, "daily_limit": 7_000, "token_limit": None, "token_window": "daily"},
             "groq/compound":        {"rpm_limit": 30, "daily_limit": 250,   "token_limit": None, "token_window": "daily"},
             "groq/compound-mini":   {"rpm_limit": 30, "daily_limit": 250,   "token_limit": None, "token_window": "daily"},
-        },
-    },
-    "openrouter": {
-        "default": {
-            "rpm_limit": 20,
-            "daily_limit": 50,  # conservative floor of 50-1000 range
-            "token_limit": None,
-            "token_window": "daily",
         },
     },
 }

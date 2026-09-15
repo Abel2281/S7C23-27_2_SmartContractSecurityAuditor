@@ -30,8 +30,8 @@ ROLE_TIER = {
 }
 
 TIER_PROVIDER_ORDER = {
-    "light": ["groq", "gemini", "nvidia", "openrouter"],
-    "heavy": ["nvidia", "groq", "gemini", "openrouter"],
+    "light": ["groq", "gemini", "nvidia"],
+    "heavy": ["nvidia", "groq", "gemini"],
 }
 
 TIER_TIMEOUT = {
@@ -63,14 +63,12 @@ ENDPOINTS = {
     "nvidia": "https://integrate.api.nvidia.com/v1/chat/completions",
     "groq": "https://api.groq.com/openai/v1/chat/completions",
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-    "openrouter": "https://openrouter.ai/api/v1/chat/completions",
 }
 
 API_KEY_ENV = {
     "nvidia": "NVIDIA_API_KEY",
     "groq": "GROQ_API_KEY",
     "gemini": "GEMINI_API_KEY",
-    "openrouter": "OPENROUTER_API_KEY",
 }
 
 

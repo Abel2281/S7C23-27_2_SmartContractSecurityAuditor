@@ -32,21 +32,18 @@ MODELS_ENDPOINTS = {
     "nvidia": "https://integrate.api.nvidia.com/v1/models",
     "groq": "https://api.groq.com/openai/v1/models",
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/models",
-    "openrouter": "https://openrouter.ai/api/v1/models",
 }
 
 CHAT_ENDPOINTS = {
     "nvidia": "https://integrate.api.nvidia.com/v1/chat/completions",
     "groq": "https://api.groq.com/openai/v1/chat/completions",
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-    "openrouter": "https://openrouter.ai/api/v1/chat/completions",
 }
 
 API_KEY_ENV = {
     "nvidia": "NVIDIA_API_KEY",
     "groq": "GROQ_API_KEY",
     "gemini": "GEMINI_API_KEY",
-    "openrouter": "OPENROUTER_API_KEY",
 }
 
 # priority-ordered candidates per provider/tier -- a PREFERENCE order, not a
@@ -101,36 +98,17 @@ CANDIDATES = {
             "models/gemma-4-26b-a4b-it",
         ],
     },
-    "openrouter": {
-        "light": [
-            "meta-llama/llama-3.3-8b-instruct:free",
-            "mistralai/mistral-small-3.1-24b-instruct:free",
-            "google/gemma-3-27b-it:free",
-            "meta-llama/llama-3.1-8b-instruct:free",
-        ],
-        "heavy": [
-            "meta-llama/llama-3.3-70b-instruct:free",
-            "deepseek/deepseek-r1:free",
-            "nvidia/nemotron-3-ultra-550b-a55b:free",
-            "meta-llama/llama-3.1-70b-instruct:free",
-        ],
-    },
 }
 
 # Used ONLY as a last-resort fallback when NONE of the curated CANDIDATES
 # above pass probing -- lets us pick a real, currently-live model straight
-# from the live catalog by name heuristics.
+# from the live catalog by name heuristics, instead of giving up on an
+# entire provider tier just because our hand-curated list is stale (which
+# free-tier catalogs guarantee will happen periodically).
 TIER_HINTS = {
     "light": ["nano", "mini", "small", "lite", "flash", "8b", "9b", "7b", "4b", "3b", "2b", "1b"],
     "heavy": ["ultra", "large", "pro", "super", "70b", "72b", "405b", "550b", "120b", "34b", "32b"],
 }
-
-# OpenRouter mixes free (":free" suffix) and PAID models in the same
-# /models response. Falling back to "any live model" without filtering this
-# would risk silently picking a paid model and spending real money -- so
-# for openrouter specifically, the pool is restricted to ":free" ids before
-# any heuristic matching happens.
-FREE_SUFFIX = ":free"
 
 # Model names containing any of these are disqualified from the "light" tier
 # heuristic pick specifically. These indicate extra hidden reasoning/thinking
@@ -167,14 +145,10 @@ MAX_PROBE_ATTEMPTS = 8    # total probe calls allowed per (provider, tier)
 MAX_LIVE_CANDIDATES = 3   # stop early once this many validated live models are found
 
 
-def _heuristic_candidates_from_live(provider: str, tier: str, live_ids: set) -> list[str]:
+def _heuristic_candidates_from_live(tier: str, live_ids: set) -> list[str]:
     """Returns a priority-ordered list of live, task-appropriate candidates
     to probe, used only when every curated CANDIDATES entry has failed."""
-    pool = live_ids
-    if provider == "openrouter":
-        pool = {m for m in live_ids if m.endswith(FREE_SUFFIX)}
-
-    pool = {m for m in pool if not any(bad in m.lower() for bad in TASK_SPECIALIZED_EXCLUDE)}
+    pool = {m for m in live_ids if not any(bad in m.lower() for bad in TASK_SPECIALIZED_EXCLUDE)}
 
     if tier == "light":
         filtered = {m for m in pool if not any(bad in m.lower() for bad in LIGHT_TIER_EXCLUDE)}
@@ -298,7 +272,7 @@ def _pick_multi(provider: str, tier: str, live_ids: set | None) -> list[str]:
 
     # none of our curated candidates are live -- fall back to live,
     # task-appropriate catalog matches instead of giving up on the provider.
-    fallback_pool = _heuristic_candidates_from_live(provider, tier, live_ids)
+    fallback_pool = _heuristic_candidates_from_live(tier, live_ids)
     for candidate in fallback_pool:
         if attempts >= MAX_PROBE_ATTEMPTS or len(live_found) >= MAX_LIVE_CANDIDATES:
             break
