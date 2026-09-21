@@ -55,6 +55,13 @@ class JudgeVerdict(BaseModel):
     final_severity: Optional[Severity] = Field(
         None, description="Judge's own severity call; None if INCONCLUSIVE"
     )
+    confidence: float = Field(
+        ..., ge=0.0, le=1.0,
+        description=(
+            "Judge's confidence in this verdict, 0.0-1.0. Should reflect how "
+            "clearly the code and arguments resolve the question, not verdict severity."
+        )
+    )
     reasoning: str = Field(..., description="Synthesis of Prosecutor charge vs Defender rebuttal")
     patch_recommendation: Optional[str] = Field(
         None, description="Suggested fix, if verdict is CONFIRMED"
