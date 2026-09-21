@@ -168,6 +168,7 @@ def _inconclusive_record(finding_id: str, contract_source: str, reason: str) -> 
         finding_id=finding_id,
         verdict=Verdict.INCONCLUSIVE,
         final_severity=None,
+        confidence=0.0,
         reasoning=f"Pipeline failure before/at Defender stage: {reason}",
         patch_recommendation=None,
     )

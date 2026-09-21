@@ -16,6 +16,9 @@ which is better placed to decide whether to halt the whole run vs. skip.
 finding has finding_id/check/impact/confidence/contract_name/related_functions. 
 code_context is the flattened stringorchestrator.py builds from related_functions 
 before calling judge().
+
+Falls back (does not raise) to INCONCLUSIVE with confidence=0.0 on:
+  schema validation exhaustion after MAX_RETRIES
 """
 
 from smart_audit.router.validator import validate_with_retry
@@ -36,11 +39,19 @@ code -- do not simply defer to whichever side sounded more confident. Decide:
 - FALSE_POSITIVE: the Defender's mitigating factors hold up; not exploitable
 - INCONCLUSIVE: the evidence/arguments don't settle it either way
 If CONFIRMED, include a concrete patch recommendation.
+
+Also assign a confidence score from 0.0 to 1.0 for your verdict. This is
+confidence in the VERDICT, not its severity -- a clear-cut FALSE_POSITIVE
+deserves high confidence too. Score lower when the Prosecutor and Defender
+both made credible, conflicting points, or the code context left real
+ambiguity. Score higher when the code plainly settles the question one way.
+
 Respond ONLY with JSON matching this schema:
 {
   "finding_id": str,
   "verdict": "CONFIRMED" | "FALSE_POSITIVE" | "INCONCLUSIVE",
   "final_severity": "High" | "Medium" | "Low" | null,
+  "confidence": float,
   "reasoning": str,
   "patch_recommendation": str | null
 }
@@ -81,6 +92,7 @@ def _inconclusive_fallback(finding_id: str):
             finding_id=finding_id,
             verdict=Verdict.INCONCLUSIVE,
             final_severity=None,
+            confidence=0.0,
             reasoning=(
                 "Judge output failed schema validation after retries; "
                 f"defaulting to INCONCLUSIVE. Last error: {last_error}"
